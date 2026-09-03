@@ -25,5 +25,8 @@
     "--query-driver=**",
     "--compile-commands-dir=d:\\esp32Demo\\project1\\build"
   ],
-  "idf.currentSetup": "D:\\esp32idf\\v5.5.4\\esp-idf"
+  "idf.currentSetup": "D:\\esp32idf\\v5.5.4\\esp-idf",
+  "idf.flashType": "UART",
+  "idf.portWin": "COM41",
+  "idf.openOcdConfigs": ["board/esp32p4-builtin.cfg"]
 }

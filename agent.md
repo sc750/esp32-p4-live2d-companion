@@ -55,6 +55,21 @@ EVENT_SUBSCRIBE(EVENT_ASR_FINAL, on_asr_final_handler);
 | GPIO35 冲突 | BOOT 按钮和以太网 RMII TXD1 共享，不能同时用 |
 | MIPI-DSI underrun | PSRAM 时钟 ≥200MHz，开启 `CONFIG_SPIRAM_XIP_FROM_PSRAM` |
 
+## 踩坑记录
+
+### ESP-IDF 组件版本兼容性（2026-09-02）
+- **问题**：`esp_lvgl_adapter` 最新版依赖的 `esp_lvgl_port` v2.9.0 使用了 ESP-IDF 5.6+ 才有的 `on_frame_buf_complete` API，导致 5.5.x 编译失败
+- **规则**：组件版本必须**锁定精确版本**，不要用 `^` 或 `*`。已验证可用的版本组合：
+  - `esp_lvgl_adapter: "0.6.1"` + `esp_lvgl_port: "2.8.*"`（编译时探测 API 兼容性）
+- **规则**：首次调试新硬件时，先用 **Espressif 官方 example** 验证 BSP 能正常工作，再写业务代码
+- **规则**：崩溃超过 2 次必须停下来分析根因，不要反复尝试不同配置
+- **规则**：烧录可能导致崩溃的固件前，考虑串口芯片被卡死的风险（按 BOOT + 插电可恢复）
+
+### MIPI-DSI 初始化崩溃（待解决）
+- **现象**：`esp_lcd_new_dsi_bus()` 内部 `rtc_clk_cal_internal` 崩溃
+- **可能原因**：ESP-IDF v5.5.4 与芯片版本 v3.2 的 DSI PHY 驱动兼容性问题
+- **下一步**：用 Espressif 官方预编译固件验证硬件，或升级 ESP-IDF
+
 ## 工具禁用
 
 **本项目禁止使用智谱（Zhipu / zhipuai）的任何 MCP 工具。**
