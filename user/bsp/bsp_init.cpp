@@ -1,34 +1,27 @@
-﻿/**
+/**
  * @file    bsp_init.cpp
- * @brief   鏉跨骇鏀寔鍖呭垵濮嬪寲瀹炵幇
+ * @brief   板级支持包初始化实现
  *
- * 鍩轰簬 esp_brookesia_phone 瀹樻柟 demo 鐨勫垵濮嬪寲娴佺▼銆? * 浣跨敤瀹樻柟 BSP + esp_lv_adapter v0.5 + esp_lvgl_port v2.4銆? *
+ * 对齐官方 esp_brookesia_phone 示例的初始化流程：
+ *   NVS → SPIFFS → 音频 → 显示(含 LVGL/触摸) → 背光
+ * I2C 由官方 BSP 内部懒初始化（GPIO7/8, 400kHz，触摸/codec/相机 SCCB 共总线）。
+ *
  * @date    2026-09-02
- * @version 1.0.0
+ * @version 1.1.0  R2: 显式配置 DSI lane 速率；初始化顺序对齐官方；转 UTF-8
  */
 
 #include "bsp_init.h"
 
-#include <cstring>
 #include "esp_log.h"
-#include "nvs_flash.h"
-#include "esp_event.h"
-#include "esp_netif.h"
 #include "esp_check.h"
-#include "esp_heap_caps.h"
+#include "nvs_flash.h"
 
-/* 瀹樻柟 BSP */
+/* 官方 BSP（noglib 变体） */
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
 #include "bsp/touch.h"
 
-/* LVGL Adapter v0.5 */
-#include "esp_lv_adapter.h"
-
-/* LVGL */
-#include "lvgl.h"
-
-/* 鏈湴 LVGL 閫傞厤鍣ㄥ垵濮嬪寲 */
+/* 本地 LVGL 适配器（MIPI-DSI + LVGL + 触摸） */
 #include "lvgl_adapter_init.h"
 
 static const char *TAG = "bsp_init";
@@ -45,46 +38,56 @@ static esp_err_t init_nvs(void)
 }
 
 /**
- * @brief 鍒濆鍖栨樉绀哄睆锛堜娇鐢ㄨ兘鐢ㄧ殑瀹樻柟 demo 鐨勫垵濮嬪寲娴佺▼锛? */
+ * @brief 初始化显示屏（与官方 esp_brookesia_phone 一致）
+ *
+ * 显式设置 DSI lane 速率（官方 main.cpp 同款）：
+ * lane_bit_rate_mbps=0 会导致 DSI 总线创建异常，必须取 BSP_LCD_MIPI_DSI_LANE_BITRATE_MBPS。
+ */
 static esp_err_t init_display(void)
 {
-    ESP_LOGI(TAG, "姝ｅ湪鍒濆鍖栨樉绀哄睆...");
-    /* 閰嶇疆鏄剧ず锛堜笌鑳界敤鐨?esp_brookesia_phone 瀹屽叏涓€鑷达級 */
-    bsp_display_config_t cfg = {};
+    ESP_LOGI(TAG, "正在初始化显示屏...");
 
-    /* 鍒涘缓 LVGL 鏄剧ず璁惧锛堝唴閮ㄥ畬鎴?MIPI-DSI + LVGL + 瑙︽懜锛?*/
+    bsp_display_config_t cfg = {
+        .hdmi_resolution = BSP_HDMI_RES_NONE,
+        .dsi_bus = {
+            /* phy_clk_src 保持 0（与官方一致），仅显式配置 lane 速率 */
+            .lane_bit_rate_mbps = BSP_LCD_MIPI_DSI_LANE_BITRATE_MBPS,
+        },
+    };
+
+    /* 创建 LVGL 显示设备（内部完成 MIPI-DSI + LVGL + 触摸） */
     lv_display_t *disp = lvgl_adapter_init(&cfg);
     if (disp == nullptr) {
-        ESP_LOGE(TAG, "LVGL 閫傞厤鍣ㄥ垵濮嬪寲澶辫触");
+        ESP_LOGE(TAG, "LVGL 适配器初始化失败");
         return ESP_FAIL;
     }
 
-    /* 鎵撳紑鑳屽厜 */
-    ESP_RETURN_ON_ERROR(bsp_display_backlight_on(), TAG, "鑳屽厜鎵撳紑澶辫触");
+    /* 打开背光 */
+    ESP_RETURN_ON_ERROR(bsp_display_backlight_on(), TAG, "背光打开失败");
 
     s_is_display_ready = true;
-    ESP_LOGI(TAG, "鏄剧ず灞忓垵濮嬪寲鎴愬姛 (%dx%d)", BSP_LCD_H_RES, BSP_LCD_V_RES);
+    ESP_LOGI(TAG, "显示屏初始化成功 (%dx%d)", BSP_LCD_H_RES, BSP_LCD_V_RES);
     return ESP_OK;
 }
 
 extern "C" esp_err_t bsp_init_all(void)
 {
-    ESP_LOGI(TAG, "========== BSP 鍒濆鍖栧紑濮?==========");
+    ESP_LOGI(TAG, "========== BSP 初始化开始 ==========");
 
-    /* NVS */
+    /* 1. NVS */
     ESP_RETURN_ON_ERROR(init_nvs(), TAG, "NVS init failed");
 
-    /* SPIFFS */
-    ESP_ERROR_CHECK(bsp_spiffs_mount());
-    ESP_LOGI(TAG, "SPIFFS 鎸傝浇鎴愬姛");
+    /* 2. SPIFFS（空白分区自动格式化，见 CONFIG_BSP_SPIFFS_FORMAT_ON_MOUNT_FAIL） */
+    ESP_RETURN_ON_ERROR(bsp_spiffs_mount(), TAG, "SPIFFS mount failed");
+    ESP_LOGI(TAG, "SPIFFS 挂载成功");
 
-    /* 闊抽锛圥hase 3 瀹炵幇锛?*/
-    ESP_LOGI(TAG, "闊抽鍒濆鍖栧皢鍦?Phase 3 瀹炵幇");
+    /* 3. 音频（R3 实现：ES8311 录放 + PA 使能） */
+    ESP_LOGI(TAG, "音频初始化将在 R3 实现");
 
-    /* 鏄剧ず灞?+ LVGL */
+    /* 4. 显示屏 + LVGL */
     ESP_RETURN_ON_ERROR(init_display(), TAG, "display init failed");
 
-    ESP_LOGI(TAG, "========== BSP 鍒濆鍖栧畬鎴?==========");
+    ESP_LOGI(TAG, "========== BSP 初始化完成 ==========");
     return ESP_OK;
 }
 
@@ -95,13 +98,12 @@ extern "C" bool bsp_display_is_ready(void)
 
 extern "C" bool bsp_wifi_is_connected(void)
 {
-    return false;
+    return false; /* R5 实装 */
 }
 
 extern "C" esp_err_t bsp_wifi_get_ip(char *buf, size_t buf_len)
 {
     if (!buf || !buf_len) return ESP_ERR_INVALID_ARG;
     buf[0] = '\0';
-    return ESP_ERR_NOT_FINISHED;
+    return ESP_ERR_NOT_FINISHED; /* R5 实装 */
 }
-

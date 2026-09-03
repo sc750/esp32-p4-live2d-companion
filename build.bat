@@ -1,10 +1,11 @@
 @echo off
-rem === ESP-IDF 环境说明 ===
-rem 本机为 Windows 安装器布局（工具在 C:\Espressif），export.bat 无法完整激活
-rem （报 "tool xtensa-esp-elf-gdb has no installed versions"），故手工拼装环境。
-rem 注意：ESP_IDF_VERSION 必须设置——esp_wifi_remote 组件的 Kconfig 用
-rem `orsource "./Kconfig.idf_v$ESP_IDF_VERSION.in"` 按版本加载符号；
-rem 缺失时 CONFIG_WIFI_RMT_* 全部丢失，esp_hosted 编译失败（eh_host_wifi.c）。
+rem === ESP-IDF env (Windows-installer layout: tools in C:\Espressif) ===
+rem export.bat CANNOT fully activate here (gdb tools "not installed"), so we
+rem hand-roll the environment. ESP_IDF_VERSION is REQUIRED: esp_wifi_remote's
+rem Kconfig loads symbols via `orsource "./Kconfig.idf_v$ESP_IDF_VERSION.in"`.
+rem Without it CONFIG_WIFI_RMT_* vanish and esp_hosted fails to compile.
+rem ESP_ROM_ELF_DIR silences the per-build gen_gdbinit warning.
+rem Usage: build.bat <idf.py args>, e.g. build.bat build / build.bat flash monitor
 set MSYSTEM=
 set IDF_PATH=D:\esp32idf\v5.5.4\esp-idf
 set ESP_IDF_VERSION=5.5
