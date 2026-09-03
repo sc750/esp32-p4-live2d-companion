@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 # embedded-dev arch-check (PowerShell 版) —— 与 scripts/arch-check.sh 行为对齐
 #
 # 存在意义：纯 PowerShell 环境（无 POSIX 工具）下也能跑分层架构门禁，
@@ -35,7 +35,7 @@ foreach ($a in $args) {
 
 # ===== 配置（与 .sh 同步）=====
 $APP_LAYER_DIRS = @('app','application','project/code/app','src/app','code/app')
-$VENDOR_DIRS    = @('libraries','sdk','vendor','third_party','Drivers','Middlewares')
+$VENDOR_DIRS    = @('libraries','sdk','vendor','third_party','Drivers','Middlewares','managed_components','build')
 $VENDOR_HEADERS_RE = '#\s*include\s+[<"](stm32[a-z0-9_]*\.h|gd32[a-z0-9_]*\.h|esp_system\.h|esp_[a-z0-9_]+\.h|driver/gpio\.h|ti_msp_dl_config\.h|nrf[a-z0-9_]*\.h|nrfx[a-z0-9_]*\.h|Ifx[A-Za-z0-9_]+\.h|ifx[a-z0-9_]+_reg\.h|SysSe/[^>"]+|Bsp\.h|DA[A-Z0-9]+\.h|hal/nrf_[a-z0-9_]+\.h)[>"]'
 $CATCH_ALL_HEADERS_RE   = '#\s*include\s+[<"]([a-z_]*_?common_?headfile\.h|[a-z_]*_headfile\.h|headfile\.h|all\.h|globals\.h|project\.h)[>"]'
 $CATCH_ALL_WHITELIST_RE = 'zf_common_headfile\.h'
@@ -57,6 +57,11 @@ function Write-Err([string]$msg) { [Console]::Error.WriteLine($msg) }
 function Get-RelPath([string]$full) {
     $cwd = (Get-Location).Path
     $rel = [System.IO.Path]::GetRelativePath($cwd, $full)
+    if ([string]::IsNullOrEmpty($rel)) {
+        # Windows PowerShell 5.1 (.NET Framework) 没有 Path.GetRelativePath，回退 Resolve-Path
+        # （注意：-Relative 返回字符串，不能再取 .Path）
+        try { $rel = Resolve-Path -LiteralPath $full -Relative } catch { $rel = $full }
+    }
     return ($rel -replace '\\','/')
 }
 

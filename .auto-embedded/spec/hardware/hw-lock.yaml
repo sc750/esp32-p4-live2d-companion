@@ -1,16 +1,39 @@
 # 硬件资源锁（机器可读）。RESEARCH 阶段填写并冻结；SessionStart hook 注入其摘要。
 # 同一资源不可重复占用——填写时自查 pin/dma/irq/timer 无重复。
-# 示例条目见注释，正式条目顶格写在各 section 下。
+# 基线来源：esp32_p4_function_ev_board_noglib 5.2.3 头文件（官方冻结基线），
+# 详见 .auto-embedded/spec/hardware/index.md 与 research.md。
 
 pins:
-  # - {id: PA9,  func: USART1_TX, owner: bsp_uart}
-  # - {id: PA10, func: USART1_RX, owner: bsp_uart}
+  - {id: GPIO7,  func: I2C1_SDA,        owner: bsp(BSP共享I2C1, GT911/ES8311/SC2336-SCCB)}
+  - {id: GPIO8,  func: I2C1_SCL,        owner: bsp(BSP共享I2C1, 400kHz)}
+  - {id: GPIO9,  func: I2S1_DOUT,       owner: bsp_audio(ES8311 DAC)}
+  - {id: GPIO10, func: I2S1_WS,         owner: bsp_audio}
+  - {id: GPIO11, func: I2S1_DIN,        owner: bsp_audio(ES8311 ADC)}
+  - {id: GPIO12, func: I2S1_BCLK,       owner: bsp_audio}
+  - {id: GPIO13, func: I2S1_MCLK,       owner: bsp_audio}
+  - {id: GPIO53, func: PA_EN,           owner: bsp_audio(NS4150功放, codec驱动托管)}
+  - {id: GPIO26, func: LCD_BACKLIGHT,   owner: bsp(LEDC ch1, 10bit/5kHz)}
+  - {id: GPIO27, func: LCD_RST,         owner: bsp(EK79007)}
+  - {id: GPIO18, func: WIFI_SDIO_CLK,   owner: esp_hosted(板载C6)}
+  - {id: GPIO19, func: WIFI_SDIO_CMD,   owner: esp_hosted}
+  - {id: GPIO14, func: WIFI_SDIO_D0,    owner: esp_hosted}
+  - {id: GPIO15, func: WIFI_SDIO_D1,    owner: esp_hosted}
+  - {id: GPIO16, func: WIFI_SDIO_D2,    owner: esp_hosted}
+  - {id: GPIO17, func: WIFI_SDIO_D3,    owner: esp_hosted}
+  - {id: GPIO54, func: WIFI_C6_RESET,   owner: esp_hosted}
+  - {id: GPIO38, func: CONSOLE_UART_TX, owner: system(默认控制台)}
+  - {id: GPIO37, func: CONSOLE_UART_RX, owner: system(默认控制台)}
+  # MIPI-DSI 2-lane / MIPI-CSI 2-lane 为芯片专用差分对，不占 GPIO
+  # SDMMC slot0 (GPIO39~44) 与 USB (19/20) 暂未启用，保留
 
 dma:
-  # - {stream: DMA1_CH4, peripheral: USART1_TX, owner: drv_uart_dma}
+  - {stream: MIPI-DSI,   peripheral: DPI帧缓冲,  owner: bsp(3×RGB565缓冲+DMA2D刷新)}
+  - {stream: MIPI-CSI,   peripheral: SC2336出图, owner: bsp_camera(esp_video V4L2)}
+  - {stream: I2S1_TXRX,  peripheral: ES8311,     owner: bsp_audio(esp_codec_dev)}
+  - {stream: SDIO,       peripheral: C6通信,     owner: esp_hosted(SDIO 4-bit)}
 
 irq:
-  # - {irqn: USART1_IRQn, priority_preempt: 1, priority_sub: 0, owner: drv_uart}
+  # 中断均由 ESP-IDF 驱动内部分配（DSI/CSI/I2S/LEDC/GT911-poll），应用层未显式占用
 
 timers:
-  # - {id: TIM2, func: 1ms_tick, owner: svc_scheduler}
+  # LEDC timer1(背光5kHz) 由 BSP 占用；FreeRTOS tick 由系统占用
