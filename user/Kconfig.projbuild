@@ -1,0 +1,13 @@
+menu "BSP Wi-Fi 配置"
+
+    config BSP_WIFI_SSID
+        string "Wi-Fi SSID"
+        default ""
+        help
+            目标 AP 名称。非空时 bsp_init_all 会在启动时自动连接。
+
+    config BSP_WIFI_PASSWORD
+        string "Wi-Fi 密码"
+        default ""
+
+endmenu

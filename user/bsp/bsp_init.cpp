@@ -30,6 +30,9 @@
 /* 摄像头 BSP（R4） */
 #include "bsp_camera.h"
 
+/* Wi-Fi BSP（R5） */
+#include "bsp_wifi.h"
+
 static const char *TAG = "bsp_init";
 static bool s_is_display_ready = false;
 
@@ -101,6 +104,13 @@ extern "C" esp_err_t bsp_init_all(void)
         ESP_LOGW(TAG, "摄像头不可用（未安装模组或探测失败），跳过");
     }
 
+    /* 6. Wi-Fi（STA，esp_hosted SDIO→C6）；配置了 SSID 则自动连接 */
+    if (bsp_wifi_init() == ESP_OK) {
+        bsp_wifi_connect_from_config();
+    } else {
+        ESP_LOGW(TAG, "Wi-Fi 初始化失败，网络功能不可用");
+    }
+
     ESP_LOGI(TAG, "========== BSP 初始化完成 ==========");
     return ESP_OK;
 }
@@ -108,16 +118,4 @@ extern "C" esp_err_t bsp_init_all(void)
 extern "C" bool bsp_display_is_ready(void)
 {
     return s_is_display_ready;
-}
-
-extern "C" bool bsp_wifi_is_connected(void)
-{
-    return false; /* R5 实装 */
-}
-
-extern "C" esp_err_t bsp_wifi_get_ip(char *buf, size_t buf_len)
-{
-    if (!buf || !buf_len) return ESP_ERR_INVALID_ARG;
-    buf[0] = '\0';
-    return ESP_ERR_NOT_FINISHED; /* R5 实装 */
 }
