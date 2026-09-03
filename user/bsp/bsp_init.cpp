@@ -24,6 +24,9 @@
 /* 本地 LVGL 适配器（MIPI-DSI + LVGL + 触摸） */
 #include "lvgl_adapter_init.h"
 
+/* 音频 BSP（R3） */
+#include "bsp_audio.h"
+
 static const char *TAG = "bsp_init";
 static bool s_is_display_ready = false;
 
@@ -81,8 +84,9 @@ extern "C" esp_err_t bsp_init_all(void)
     ESP_RETURN_ON_ERROR(bsp_spiffs_mount(), TAG, "SPIFFS mount failed");
     ESP_LOGI(TAG, "SPIFFS 挂载成功");
 
-    /* 3. 音频（R3 实现：ES8311 录放 + PA 使能） */
-    ESP_LOGI(TAG, "音频初始化将在 R3 实现");
+    /* 3. 音频（ES8311 录放 + PA），自检播放短提示音并检查麦克风电平 */
+    ESP_RETURN_ON_ERROR(bsp_audio_open(), TAG, "audio init failed");
+    bsp_audio_self_test();
 
     /* 4. 显示屏 + LVGL */
     ESP_RETURN_ON_ERROR(init_display(), TAG, "display init failed");

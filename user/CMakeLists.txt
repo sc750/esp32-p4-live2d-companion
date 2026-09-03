@@ -1,6 +1,7 @@
 idf_component_register(SRCS "main_app.c"
                             "bsp/bsp_init.cpp"
                             "bsp/lvgl_adapter_init.c"
+                            "bsp/bsp_audio.c"
                             "core/event_bus.c"
                             "core/memory_manager.c"
                             "core/app_config.c"
@@ -17,4 +18,4 @@ idf_component_register(SRCS "main_app.c"
                                 "ui"
                                 "ui/themes"
                     REQUIRES nvs_flash esp_event esp_netif lvgl__lvgl esp_timer
-                    PRIV_REQUIRES espressif__esp32_p4_function_ev_board_noglib espressif__esp_lvgl_adapter)
+                    PRIV_REQUIRES espressif__esp32_p4_function_ev_board_noglib espressif__esp_lvgl_adapter espressif__esp_codec_dev)
