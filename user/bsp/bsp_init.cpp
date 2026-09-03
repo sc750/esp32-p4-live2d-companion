@@ -27,6 +27,9 @@
 /* 音频 BSP（R3） */
 #include "bsp_audio.h"
 
+/* 摄像头 BSP（R4） */
+#include "bsp_camera.h"
+
 static const char *TAG = "bsp_init";
 static bool s_is_display_ready = false;
 
@@ -90,6 +93,13 @@ extern "C" esp_err_t bsp_init_all(void)
 
     /* 4. 显示屏 + LVGL */
     ESP_RETURN_ON_ERROR(init_display(), TAG, "display init failed");
+
+    /* 5. 摄像头（SC2336，无模组时不阻塞启动）；启动取流验证出图 */
+    if (bsp_camera_init() == ESP_OK) {
+        bsp_camera_start_stream(NULL); /* NULL 回调 = 每 30 帧打日志 */
+    } else {
+        ESP_LOGW(TAG, "摄像头不可用（未安装模组或探测失败），跳过");
+    }
 
     ESP_LOGI(TAG, "========== BSP 初始化完成 ==========");
     return ESP_OK;
