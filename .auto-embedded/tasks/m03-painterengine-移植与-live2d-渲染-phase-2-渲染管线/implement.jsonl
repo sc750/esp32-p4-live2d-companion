@@ -1,0 +1,3 @@
+{"file": "spec/architecture/index.md", "reason": "分层约束"}
+{"file": "spec/conventions/index.md", "reason": "编码约定与踩坑"}
+{"file": "spec/hardware/index.md", "reason": "硬件基线"}
