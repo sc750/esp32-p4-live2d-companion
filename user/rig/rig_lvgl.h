@@ -9,6 +9,8 @@
 #ifndef RIG_LVGL_H
 #define RIG_LVGL_H
 
+#include <stdint.h>
+#include "esp_err.h"
 #include "lvgl.h"
 #include "rig_types.h"
 
@@ -28,6 +30,12 @@ extern "C" {
  * @return lv_obj_t* image 对象；失败 NULL
  */
 lv_obj_t *rig_lvgl_create(lv_obj_t *parent, const rig_model_t *m, int fit_h);
+
+/**
+ * @brief 启动渲染任务（Core 1，~30fps）
+ * @param fps 目标帧率（1~60，0/非法按 30）
+ */
+esp_err_t rig_lvgl_start(int fps);
 
 #ifdef __cplusplus
 }

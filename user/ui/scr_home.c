@@ -116,27 +116,20 @@ static void create_live2d_area(lv_obj_t *parent)
     lv_obj_set_flex_flow(s_home_ui.live2d_area, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(s_home_ui.live2d_area, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    /* 角色区域不滚动（拖动手势留给头部跟随，M03 R5b） */
+    lv_obj_clear_flag(s_home_ui.live2d_area, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* 占位提示文字（Phase 2 会被 Live2D 角色替换） */
-    s_home_ui.tap_hint = lv_label_create(s_home_ui.live2d_area);
-    /* Use plain ASCII here; the default Montserrat font may not contain LVGL
-     * private-use symbol glyphs, which otherwise appear as a column of boxes. */
-    lv_label_set_text(s_home_ui.tap_hint,
-                      "[IMG]\nLive2D Character Area\n(Phase 2: PainterEngine)");
-    lv_obj_set_style_text_color(s_home_ui.tap_hint,
-                                lv_color_hex(0x999999), 0);  /* 灰色 */
-    lv_obj_set_style_text_align(s_home_ui.tap_hint, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(s_home_ui.tap_hint, &lv_font_montserrat_14, 0);
-
-    /* 点击提示 */
-    lv_obj_t *hint2 = lv_label_create(s_home_ui.live2d_area);
-    lv_label_set_text(hint2, "\n> Tap to start chatting");
-    lv_obj_set_style_text_color(hint2, lv_color_hex(0x666666), 0);
+    /* 占位提示已移除：角色自 M03 R5b 起渲染到本区域（scr_home_get_live2d_area） */
 
     /* 注册触摸点击事件：用户点击此区域 → 发送 EVENT_SCREEN_TAP */
     lv_obj_add_event_cb(s_home_ui.live2d_area, on_tap_clicked,
                         LV_EVENT_CLICKED, NULL);
     lv_obj_add_flag(s_home_ui.live2d_area, LV_OBJ_FLAG_CLICKABLE);  /* 启用点击 */
+}
+
+lv_obj_t *scr_home_get_live2d_area(void)
+{
+    return s_home_ui.live2d_area;
 }
 
 /**
@@ -210,6 +203,8 @@ lv_obj_t *scr_home_create(lv_obj_t *parent)
     lv_obj_set_style_pad_all(s_home_ui.container, 0, 0);
     lv_obj_set_flex_flow(s_home_ui.container, LV_FLEX_FLOW_COLUMN);  /* 纵向排列 */
     lv_obj_add_flag(s_home_ui.container, LV_OBJ_FLAG_HIDDEN);        /* 默认隐藏 */
+    /* 页面容器不滚动（全屏拖动会滚背景，M03 R5b 修复） */
+    lv_obj_clear_flag(s_home_ui.container, LV_OBJ_FLAG_SCROLLABLE);
 
     /* 按顺序创建子元素（从上到下） */
     create_status_bar(s_home_ui.container);      /* 1. 顶部状态栏 */

@@ -212,19 +212,67 @@ def pack(src_dir, path):
         max_h = cfg.get("max_height", max_h)
         white_thr = cfg.get("white_threshold", white_thr)
 
-    def cut_white(img):
-        """纯白背景转透明（阈值可配；JPG 噪点建议 240）。"""
-        img = img.convert("RGBA")
-        px = img.load()
-        w, h = img.size
-        for y in range(h):
-            for x in range(w):
-                r, g, b, a = px[x, y]
-                if r > white_thr and g > white_thr and b > white_thr:
-                    px[x, y] = (r, g, b, 0)
-        return img
+    def extract(img):
+        """白底抠图 v2——数学正确消白边（R5a 重写，替代阈值/腐蚀补丁）。
 
-    base = cut_white(Image.open(base_p))
+        1) 洪泛：从四角填充分离"外部白底"与"内部白物"（白衬衫不被误抠）
+        2) 边缘带 matting：带内像素 P = αF + (1-α)W，
+           α = clip(d(P)/d_ref, 0, 1)，d = 与白的色距，d_ref 取邻域最饱和色
+        3) 颜色反解 F = (P - (1-α)W)/α —— 还原真实角色色，边缘零白渍
+        """
+        import numpy as np
+        from PIL import ImageDraw, ImageFilter
+
+        W0, H0 = img.size
+        # ---- 1. 外部背景掩码：PIL floodfill 从四角注入品红（thresh 判白） ----
+        work = img.convert("RGB").copy()
+        MAGENTA = (255, 0, 254)
+        for seed in [(0, 0), (W0 - 1, 0), (0, H0 - 1), (W0 - 1, H0 - 1)]:
+            ImageDraw.floodfill(work, seed, MAGENTA, thresh=14)
+        arr = np.asarray(work, dtype=np.int16)
+        bg = (arr[:, :, 0] == 255) & (arr[:, :, 1] == 0) & (arr[:, :, 2] == 254)
+
+        # ---- 1b. 开运算清噪点孤岛（JPG 残渣；细发丝 ~10px 不受 5x5 影响） ----
+        a_bin = Image.fromarray(((~bg) * 255).astype(np.uint8), "L")
+        a_open = np.asarray(a_bin.filter(ImageFilter.MinFilter(5)).filter(
+            ImageFilter.MaxFilter(5)), dtype=bool)
+        bg = bg | (~a_open)
+
+        # ---- 2. 距白场距离 + 边缘带 ----
+        rgb = np.asarray(img.convert("RGB"), dtype=np.float32)
+        d = np.sqrt(((255.0 - rgb) ** 2).sum(axis=2))       # 白=0，色越浓越大
+        d_img = Image.fromarray(np.clip(d, 0, 255).astype(np.uint8), "L")
+        bg_img = Image.fromarray((bg * 255).astype(np.uint8), "L")
+
+        # 背景膨胀 2px ∧ 非背景 = 边缘带（含抗锯齿过渡像素）
+        dil = np.asarray(bg_img.filter(ImageFilter.MaxFilter(5)), dtype=bool)
+        band = dil & (~bg)
+
+        # 参考饱和度：9×9 邻域内非背景像素的最大 d（= 附近"最浓"的角色色）
+        d_opaque = np.where(~bg, d, 0).astype(np.uint8)
+        d_ref = np.asarray(Image.fromarray(d_opaque, "L").filter(
+            ImageFilter.MaxFilter(9)), dtype=np.float32)
+        d_ref = np.maximum(d_ref, 48.0)                     # 防小分母
+
+        # ---- 3. 合成 alpha ----
+        alpha = np.where(bg, 0, 255).astype(np.float32)
+        # 边缘带：d<20 的近白像素（JPEG 振铃形成的"背景环"）直接归零；
+        # 其余按饱和度比例给 α，但下限64/255（≈0.25）——颜色反解除以近零 α 会爆炸产生黑边。
+        # 内部白物（衬衫）不在边缘带，不受影响。
+        a_band = np.clip((d - 20.0) / np.maximum(d_ref - 20.0, 1.0), 0.0, 1.0) * 255.0
+        a_band[d < 20.0] = 0.0
+        a_band[band] = np.maximum(a_band[band], 64.0)   # α 下限防黑边
+        alpha[band] = a_band[band]
+
+        # ---- 4. 边缘带颜色反解（α≥64/255 数值稳定，无黑边） ----
+        a_n = alpha / 255.0
+        f = (rgb - (1.0 - a_n[..., None]) * 255.0) / np.maximum(a_n[..., None], 0.25)
+        f = np.clip(f, 0, 255)
+
+        out = np.dstack([f.astype(np.uint8), alpha.astype(np.uint8)])
+        return Image.fromarray(out, "RGBA")
+
+    base = extract(Image.open(base_p))
     bbox = base.getbbox()
     base = base.crop(bbox)
     W, H = base.size
@@ -244,7 +292,7 @@ def pack(src_dir, path):
                      ("mouth_half.png", "mouth_half"), ("mouth_open.png", "mouth_open")]:
         p = os.path.join(src_dir, fn)
         if os.path.exists(p):
-            var = cut_white(Image.open(p))
+            var = extract(Image.open(p))
             vb = var.getbbox()
             if vb:
                 var = var.crop(vb)      # 按自身角色包围盒对齐（消除整图平移/尺寸差）
@@ -280,10 +328,32 @@ def pack(src_dir, path):
 
     # body: 颈线以下（含 overlap）
     push(L_BODY, base, (0, neck_y - overlap, W, H - neck_y + overlap), 0, neck_y - overlap, 0)
-    # head: 颈线以上（含 overlap）
-    push(L_HEAD, base, (0, 0, W, neck_y + overlap), 0, 0, 2)
-    # 变体部件：差分 bbox 裁剪，z 高于 head；固件在参数驱动时叠画
+    # head: 颈线以上（含 overlap），底边羽化——头移动时切线渐变不露硬边
+    head_img = base.crop((0, 0, W, neck_y + overlap))
+    feather = head_img.load()
+    fw, fh = head_img.size
+    for row in range(fh - overlap, fh):
+        k = (row - (fh - overlap)) / max(1, overlap)   # 0→1
+        mul = int(255 * (1.0 - k))
+        for col in range(fw):
+            r, g, b, a = feather[col, row]
+            if a:
+                feather[col, row] = (r, g, b, a * mul // 255)
+    push(L_HEAD, head_img, (0, 0, W, fh), 0, 0, 2)
+    # 变体部件：差分掩膜 + bbox 裁剪，z 高于 head；固件在参数驱动时叠画。
+    # 掩膜外的像素 alpha 强制清零——补丁只含"真变化"（眼/嘴），
+    # 发丝间隙的背景残留不再随矩形补丁出现（R5c 实测教训）。
+    from PIL import ImageChops, ImageFilter
+    import numpy as np
     for i, (name, var) in enumerate(variants.items()):
+        diff = ImageChops.difference(base, var).convert("L")
+        diff = diff.filter(ImageFilter.GaussianBlur(2.0)).point(lambda v: 255 if v > 30 else 0)
+        diff = diff.filter(ImageFilter.MaxFilter(9))       # 掩膜外扩 ~4px 保覆盖
+        mask = np.asarray(diff, dtype=np.float32) / 255.0
+        va = np.asarray(var, dtype=np.uint8).copy()
+        va[:, :, 3] = (va[:, :, 3].astype(np.float32) * mask).astype(np.uint8)
+        var = Image.fromarray(va, "RGBA")
+
         bb = diff_bbox(var, y_limit=neck_y)
         if not bb:
             print(f"[rigpack] 警告: {name} 与 base 无差异，跳过")

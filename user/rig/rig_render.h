@@ -42,6 +42,12 @@ void rig_surface_clear(const rig_surface_t *s);
  */
 void rig_render_model(const rig_surface_t *dst, const rig_model_t *m);
 
+/**
+ * @brief 渲染模型（带姿态：逐层偏移 + 可见性；pose=NULL 等价基准位姿）
+ */
+void rig_render_pose(const rig_surface_t *dst, const rig_model_t *m,
+                     const rig_pose_t *pose);
+
 #ifdef __cplusplus
 }
 #endif

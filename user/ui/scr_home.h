@@ -39,6 +39,12 @@ extern "C" {
 lv_obj_t *scr_home_create(lv_obj_t *parent);
 
 /**
+ * @brief 获取 Live2D 角色区域对象（角色渲染容器，M03 起启用）
+ * @return 区域对象；scr_home_create 未调用时返回 NULL
+ */
+lv_obj_t *scr_home_get_live2d_area(void);
+
+/**
  * @brief 更新状态栏
  *
  * 更新顶部状态栏的 Wi-Fi 图标和时间显示。

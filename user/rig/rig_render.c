@@ -100,6 +100,12 @@ static void build_z_order(const rig_model_t *m, uint8_t *order)
 
 void rig_render_model(const rig_surface_t *dst, const rig_model_t *m)
 {
+    rig_render_pose(dst, m, NULL);
+}
+
+void rig_render_pose(const rig_surface_t *dst, const rig_model_t *m,
+                     const rig_pose_t *pose)
+{
     if (!dst || !dst->buf || !m || !m->loaded) {
         return;
     }
@@ -108,11 +114,19 @@ void rig_render_model(const rig_surface_t *dst, const rig_model_t *m)
     build_z_order(m, order);
 
     for (int oi = 0; oi < m->layer_count; oi++) {
-        const rig_layer_t *L = &m->layers[order[oi]];
+        const uint8_t li = order[oi];
+        const rig_layer_t *L = &m->layers[li];
 
-        /* v1 基准位姿：画布位置 = base；裁剪到 surface 边界 */
-        int x0 = L->base_x;
-        int y0 = L->base_y;
+        /* 补丁层可见性（pose 提供时默认隐藏，由动画显式点亮） */
+        if (pose && !pose->visible[li]) {
+            continue;
+        }
+        int16_t dx = pose ? pose->dx[li] : 0;
+        int16_t dy = pose ? pose->dy[li] : 0;
+
+        /* 画布位置 = base + 姿态偏移；裁剪到 surface 边界 */
+        int x0 = L->base_x + dx;
+        int y0 = L->base_y + dy;
         int x1 = x0 + L->atlas_w;
         int y1 = y0 + L->atlas_h;
         int sx = 0, sy = 0;                     /* atlas 内裁剪起点 */

@@ -1,5 +1,5 @@
 {
-    "neck_ratio": 0.24,
-    "max_height": 800,
+    "neck_ratio": 0.35,
+    "max_height": 480,
     "white_threshold": 240
 }

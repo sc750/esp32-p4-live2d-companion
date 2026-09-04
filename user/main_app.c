@@ -19,6 +19,8 @@
 #include "ui_manager.h"
 #include "rig_model.h"
 #include "rig_lvgl.h"
+#include "rig_rig.h"
+#include "scr_home.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -46,10 +48,14 @@ void user_app_run(void)
     /* 4. UI 初始化 */
     ESP_ERROR_CHECK(ui_manager_init());
 
-    /* 5. 角色模型加载 + 静态渲染上屏（M03 R3） */
+    /* 5. 角色加载 + 动画渲染（M03 R5b：入住 live2d_area + 触摸跟随） */
     static rig_model_t s_model;
-    if (rig_model_load_default(&s_model) == ESP_OK) {
-        rig_lvgl_create(lv_layer_top(), &s_model, 600);
+    if (rig_model_load_default(&s_model) == ESP_OK &&
+        rig_rig_init(&s_model) == ESP_OK) {
+        lv_obj_t *area = scr_home_get_live2d_area();
+        /* fit_h=480 与 pack 的 max_height 一致——LVGL 1:1 绘制，无二次缩放 */
+        rig_lvgl_create(area, &s_model, 480);
+        rig_lvgl_start(30);
     } else {
         ESP_LOGW(TAG, "角色模型加载失败，继续启动");
     }

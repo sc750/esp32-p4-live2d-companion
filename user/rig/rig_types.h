@@ -39,6 +39,13 @@ typedef struct {
     uint16_t flags;
 } rig_layer_t;
 
+/** 每帧姿态：逐层偏移 + 补丁层可见性（渲染/动画共享） */
+typedef struct {
+    int16_t dx[RIG_MAX_LAYERS];
+    int16_t dy[RIG_MAX_LAYERS];
+    uint8_t visible[RIG_MAX_LAYERS];    /* 0=隐藏，1=显示 */
+} rig_pose_t;
+
 /** 加载完成的模型（atlas 在 PSRAM） */
 typedef struct {
     uint16_t    canvas_w, canvas_h;
