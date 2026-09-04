@@ -193,26 +193,34 @@ def placeholder(path):
 
 # ---------------------------------------------------------------- 真实素材打包
 def pack(src_dir, path):
-    """从 assets/art/<char>/ 打包：base.png 必需，变体图差分切层。"""
+    """从 assets/art/<char>/ 打包：base 图必需，变体图差分切层。"""
     import json
 
-    base_p = os.path.join(src_dir, "base.png")
-    if not os.path.exists(base_p):
-        sys.exit(f"[rigpack] 缺少 {base_p}")
+    base_p = None
+    for cand in ("base.png", "Base.png", "base.jpg", "Base.jpg", "base.jpeg", "Base.jpeg"):
+        p = os.path.join(src_dir, cand)
+        if os.path.exists(p):
+            base_p = p
+            break
+    if not base_p:
+        sys.exit(f"[rigpack] {src_dir} 中找不到 base.png/jpg")
     cfg_p = os.path.join(src_dir, "parts.json")
-    neck_ratio = 0.42
+    neck_ratio, max_h, white_thr = 0.42, 800, 245
     if os.path.exists(cfg_p):
-        neck_ratio = json.load(open(cfg_p, encoding="utf-8")).get("neck_ratio", 0.42)
+        cfg = json.load(open(cfg_p, encoding="utf-8"))
+        neck_ratio = cfg.get("neck_ratio", neck_ratio)
+        max_h = cfg.get("max_height", max_h)
+        white_thr = cfg.get("white_threshold", white_thr)
 
     def cut_white(img):
-        """纯白背景转透明（阈值 245）。"""
+        """纯白背景转透明（阈值可配；JPG 噪点建议 240）。"""
         img = img.convert("RGBA")
         px = img.load()
         w, h = img.size
         for y in range(h):
             for x in range(w):
                 r, g, b, a = px[x, y]
-                if r > 245 and g > 245 and b > 245:
+                if r > white_thr and g > white_thr and b > white_thr:
                     px[x, y] = (r, g, b, 0)
         return img
 
@@ -220,24 +228,42 @@ def pack(src_dir, path):
     bbox = base.getbbox()
     base = base.crop(bbox)
     W, H = base.size
-    print(f"[rigpack] base 裁剪后 {W}x{H}")
+
+    # 降采样（atlas 内存可控，渲染按 1:1 贴 overlay）
+    if H > max_h:
+        scale = max_h / H
+        W, H = int(W * scale), max_h
+        base = base.resize((W, H), Image.LANCZOS)
+    print(f"[rigpack] base={os.path.basename(base_p)} 处理后 {W}x{H}")
 
     neck_y = int(H * neck_ratio)
-    overlap = int(H * 0.02)
+    overlap = max(4, int(H * 0.02))
 
     variants = {}
     for fn, name in [("eyes_closed.png", "eyes_closed"),
                      ("mouth_half.png", "mouth_half"), ("mouth_open.png", "mouth_open")]:
         p = os.path.join(src_dir, fn)
         if os.path.exists(p):
-            variants[name] = cut_white(Image.open(p)).crop(bbox)
+            var = cut_white(Image.open(p))
+            vb = var.getbbox()
+            if vb:
+                var = var.crop(vb)      # 按自身角色包围盒对齐（消除整图平移/尺寸差）
+            variants[name] = var.resize((W, H), Image.LANCZOS)
 
-    # 差分求部件包围盒（相对全图坐标）
-    def diff_bbox(var):
-        from PIL import ImageChops
+    # 差分求部件包围盒（相对全图坐标）。
+    # 变体图与 base 常有 1~2px 的重采样全局差 → 先高斯模糊压掉边缘噪声，
+    # 并把搜索范围限制在颈线以上（眼/嘴只会在头区）。
+    def diff_bbox(var, y_limit=None):
+        from PIL import ImageChops, ImageFilter
         d = ImageChops.difference(base, var).convert("L")
-        d = d.point(lambda v: 255 if v > 28 else 0)
-        return d.getbbox()
+        if y_limit:
+            d = d.crop((0, 0, W, y_limit))
+        d = d.filter(ImageFilter.GaussianBlur(2.5))
+        d = d.point(lambda v: 255 if v > 40 else 0)
+        bb = d.getbbox()
+        if bb and y_limit:
+            bb = (bb[0], bb[1], bb[2], min(bb[3] + 8, H))
+        return bb
 
     layers = []
     atlas = Image.new("RGBA", (W, H * (2 + len(variants))), (0, 0, 0, 0))
@@ -258,14 +284,18 @@ def pack(src_dir, path):
     push(L_HEAD, base, (0, 0, W, neck_y + overlap), 0, 0, 2)
     # 变体部件：差分 bbox 裁剪，z 高于 head；固件在参数驱动时叠画
     for i, (name, var) in enumerate(variants.items()):
-        bb = diff_bbox(var)
+        bb = diff_bbox(var, y_limit=neck_y)
         if not bb:
             print(f"[rigpack] 警告: {name} 与 base 无差异，跳过")
+            continue
+        if (bb[2] - bb[0]) * (bb[3] - bb[1]) > 0.5 * W * H:
+            print(f"[rigpack] 警告: {name} 差分区域过大（构图不一致？），跳过")
             continue
         pad = 6
         rx0 = max(0, bb[0] - pad); ry0 = max(0, bb[1] - pad)
         rx1 = min(W, bb[2] + pad); ry1 = min(H, bb[3] + pad)
-        push(name, var, (rx0, ry0, rx1, ry1), rx0, ry0, 3 + i)
+        # 变体是脸部补丁，挂到 head 层（index=1）——转头时随头动
+        push(name, var, (rx0, ry0, rx1, ry1), rx0, ry0, 3 + i, parent=1)
         print(f"[rigpack] {name}: bbox=({rx0},{ry0})-({rx1},{ry1})")
 
     write_rigbin(path, W, H, layers, atlas)
