@@ -18,6 +18,7 @@
 #include "app_state_machine.h"
 #include "ui_manager.h"
 #include "rig_model.h"
+#include "rig_lvgl.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -45,11 +46,12 @@ void user_app_run(void)
     /* 4. UI 初始化 */
     ESP_ERROR_CHECK(ui_manager_init());
 
-    /* 5. 角色模型加载（M03 R2：加载验证） */
+    /* 5. 角色模型加载 + 静态渲染上屏（M03 R3） */
     static rig_model_t s_model;
-    esp_err_t err = rig_model_load_default(&s_model);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "角色模型加载失败 (%s)，继续启动", esp_err_to_name(err));
+    if (rig_model_load_default(&s_model) == ESP_OK) {
+        rig_lvgl_create(lv_layer_top(), &s_model, 600);
+    } else {
+        ESP_LOGW(TAG, "角色模型加载失败，继续启动");
     }
 
     /* 6. 内存报告 */
