@@ -285,7 +285,9 @@ def pack(src_dir, path):
     print(f"[rigpack] base={os.path.basename(base_p)} 处理后 {W}x{H}")
 
     neck_y = int(H * neck_ratio)
-    overlap = max(4, int(H * 0.02))
+    # A wider feathered overlap hides the raster cut when the head follows
+    # touch.  The runtime keeps motion within this band.
+    overlap = max(8, int(H * 0.05))
 
     variants = {}
     for fn, name in [("eyes_closed.png", "eyes_closed"),

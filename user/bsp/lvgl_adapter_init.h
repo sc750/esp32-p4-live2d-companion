@@ -15,6 +15,7 @@ extern "C" {
 #include "esp_lv_adapter_display.h"
 
 lv_display_t *lvgl_adapter_init(const bsp_display_config_t *cfg);
+lv_indev_t *lvgl_adapter_get_touch_indev(void);
 
 #ifdef __cplusplus
 }

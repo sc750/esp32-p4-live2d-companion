@@ -38,8 +38,8 @@ static inline float sinf_approx(float x)
 #define MOUTH_BURST_MS      900
 #define HEAD_SPRING_K       0.045f   /* 弹簧刚度（每帧@30fps） */
 #define HEAD_SPRING_D       0.82f    /* 阻尼 */
-#define HEAD_RANGE_X        12       /* 头部横移幅度 px（0.35 切线后可放大） */
-#define HEAD_RANGE_Y        10
+#define HEAD_RANGE_X        3
+#define HEAD_RANGE_Y        2
 
 typedef struct {
     const rig_model_t *m;
@@ -152,8 +152,8 @@ void rig_rig_tick(uint32_t now, rig_pose_t *out)
         /* 缓慢随机游走（低频伪随机） */
         float w1 = sinf_approx(phase * 0.21f + 1.3f);
         float w2 = sinf_approx(phase * 0.13f + 4.1f);
-        tx = w1 * HEAD_RANGE_X * 0.6f;
-        ty = w2 * HEAD_RANGE_Y * 0.5f;
+        tx = 0;
+        ty = 0;
     }
     s.head_vx = (s.head_vx + (tx - s.head_x) * HEAD_SPRING_K) * HEAD_SPRING_D;
     s.head_vy = (s.head_vy + (ty - s.head_y) * HEAD_SPRING_K) * HEAD_SPRING_D;

@@ -25,6 +25,7 @@
 #include "rig_mem.h"
 #include "rig_render.h"
 #include "rig_rig.h"
+#include "lvgl_adapter_init.h"
 
 #define TAG "rig_lvgl"
 
@@ -89,6 +90,7 @@ static void render_task(void *arg)
         rig_pose_t pose;
         rig_rig_tick(now_ms, &pose);
         int64_t t0 = esp_timer_get_time();
+        rig_surface_clear(&s_ctx.surface);
         rig_render_pose(&s_ctx.surface, s_ctx.model, &pose);
         int64_t render_us = esp_timer_get_time() - t0;
         s_ctx.last_render_us = render_us;
@@ -152,13 +154,7 @@ lv_obj_t *rig_lvgl_create(lv_obj_t *parent, const rig_model_t *m, int fit_h)
     /* 触摸跟随（PRD L2D-05）：遍历输入设备，取触摸（pointer）设备供渲染任务轮询。
      * 必须过滤 type==LV_INDEV_TYPE_POINTER，否则 BSP 注册的 encoder 等会被误选。
      * scr_home 的容器滚动已在 UI 层禁用（拖动不再被滚动消费）。 */
-    lv_indev_t *ind = lv_indev_get_next(NULL);
-    while (ind) {
-        if (lv_indev_get_type(ind) == LV_INDEV_TYPE_POINTER && !s_touch_indev) {
-            s_touch_indev = ind;
-        }
-        ind = lv_indev_get_next(ind);
-    }
+    s_touch_indev = lvgl_adapter_get_touch_indev();
     if (s_touch_indev) {
         ESP_LOGI(TAG, "触摸设备已绑定（pointer indev）");
     } else {

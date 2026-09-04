@@ -12,6 +12,7 @@
 #include "bsp/touch.h"
 
 static const char *TAG = "lvgl_adapter_init";
+static lv_indev_t *s_touch_indev = NULL;
 
 #define LVGL_ADAPTER_BUFFER_HEIGHT 20
 
@@ -69,8 +70,8 @@ lv_display_t *lvgl_adapter_init(const bsp_display_config_t *cfg)
         ESP_LOGW(TAG, "Touch init skipped (%d); LVGL will run without input", err);
     } else {
         const esp_lv_adapter_touch_config_t touch_cfg = ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(disp, touch);
-        lv_indev_t *indev = esp_lv_adapter_register_touch(&touch_cfg);
-        if (indev == NULL) {
+        s_touch_indev = esp_lv_adapter_register_touch(&touch_cfg);
+        if (s_touch_indev == NULL) {
             ESP_LOGW(TAG, "Touch registration skipped");
         }
     }
@@ -82,4 +83,9 @@ lv_display_t *lvgl_adapter_init(const bsp_display_config_t *cfg)
     }
 
     return disp;
+}
+
+lv_indev_t *lvgl_adapter_get_touch_indev(void)
+{
+    return s_touch_indev;
 }

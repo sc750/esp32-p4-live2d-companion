@@ -73,10 +73,19 @@ static inline void blit_row(rig_px_t *dst, const uint8_t *src, int n)
         }
         /* out = src*a + dst*(255-a)，四舍五入 */
         const uint16_t ia = 255 - a;
-        dst->r = (uint8_t)((src[0] * a + dst->r * ia + 127) >> 8);
-        dst->g = (uint8_t)((src[1] * a + dst->g * ia + 127) >> 8);
-        dst->b = (uint8_t)((src[2] * a + dst->b * ia + 127) >> 8);
-        dst->a = (uint8_t)(a + ((dst->a * ia + 127) >> 8));
+        const uint16_t da = dst->a;
+        const uint16_t oa = (uint16_t)a + (uint16_t)((da * ia + 127) / 255);
+        if (oa == 0) continue;
+        dst->r = (uint8_t)(((uint32_t)src[0] * a * 255U +
+                            (uint32_t)dst->r * da * ia + oa * 127U) /
+                           ((uint32_t)oa * 255U));
+        dst->g = (uint8_t)(((uint32_t)src[1] * a * 255U +
+                            (uint32_t)dst->g * da * ia + oa * 127U) /
+                           ((uint32_t)oa * 255U));
+        dst->b = (uint8_t)(((uint32_t)src[2] * a * 255U +
+                            (uint32_t)dst->b * da * ia + oa * 127U) /
+                           ((uint32_t)oa * 255U));
+        dst->a = (uint8_t)oa;
     }
 }
 

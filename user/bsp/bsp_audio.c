@@ -32,6 +32,8 @@ static esp_codec_dev_handle_t s_record_handle = NULL; /* 麦克风（ES8311 ADC�
 static bool s_is_init = false;
 static int s_volume = BSP_AUDIO_DEFAULT_VOLUME;
 
+
+
 esp_err_t bsp_audio_open(void)
 {
     if (s_is_init) {
