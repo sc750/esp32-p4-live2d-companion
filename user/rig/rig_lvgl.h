@@ -40,8 +40,8 @@ lv_obj_t *rig_lvgl_create(lv_obj_t *parent, const rig_model_t *m, int fit_h);
  * 内部持 adapter 锁做 set_parent + 重新适配高度（fit_h 变了会按
  * CONTAIN 等比重缩内容）。角色未创建时返回错误，UI 侧可安全调用。
  *
- * @param parent    新父容器（如 scr_chat_get_live2d_area()）
- * @param fit_h     新容器内的适配高度（如 SCR_CHAT_LIVE2D_FIT_H）
+ * @param parent    新父容器（任意 LVGL 容器，如未来主页状态层的角色区）
+ * @param fit_h     新容器内的适配高度（px，CONTAIN 等比适配）
  * @return ESP_OK 成功；ESP_ERR_INVALID_STATE 角色未创建
  */
 esp_err_t rig_lvgl_set_parent(lv_obj_t *parent, int fit_h);

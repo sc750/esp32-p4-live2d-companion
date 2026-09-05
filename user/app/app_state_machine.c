@@ -41,8 +41,10 @@ static void *s_change_ctx = NULL;  /* 回调函数的上下文数据 */
  *   就切换到 STATE_LISTENING（监听）状态。
  */
 static const state_transition_t s_transitions[] = {
-    /* ===== IDLE（空闲）状态下的转移规则 ===== */
-    { STATE_IDLE,      EVENT_SCREEN_TAP,       STATE_LISTENING }, /* 点击屏幕 → 开始监听语音 */
+    /* ===== IDLE（空闲）状态下的转移规则 =====
+     * R9（对话=主页状态层）：删 {IDLE, SCREEN_TAP, LISTENING}——Phase 2
+     * 无语音链路，屏幕点击不再触发对话（摸角色=rig 表情，与状态机无关）。
+     * Phase 3 接入语音后由唤醒逻辑重新提供 LISTENING 入口。 */
     { STATE_IDLE,      EVENT_NAV_MUSIC,        STATE_MUSIC },     /* 导航事件 → 进入音乐页 */
     { STATE_IDLE,      EVENT_NAV_POMODORO,     STATE_POMODORO },  /* 导航事件 → 进入番茄钟页 */
     { STATE_IDLE,      EVENT_NAV_DIARY,        STATE_DIARY },     /* 导航事件 → 进入日记页 */
@@ -50,14 +52,10 @@ static const state_transition_t s_transitions[] = {
     { STATE_IDLE,      EVENT_SLEEP_TIMEOUT,    STATE_SLEEP },     /* 超时未操作 → 进入休眠 */
     { STATE_IDLE,      EVENT_DIARY_TIME,       STATE_DIARY },     /* 到了写日记时间 → 进入日记页 */
 
-    /* ===== LISTENING（监听）状态下的转移规则 ===== */
+    /* ===== LISTENING（监听）状态下的转移规则 =====
+     * Phase 3 语音链路接入前不可达（无入口），规则保留为 Phase 3 契约 */
     { STATE_LISTENING, EVENT_ASR_FINAL,        STATE_THINKING },  /* 语音识别完成 → 进入思考 */
     { STATE_LISTENING, EVENT_TOUCH_UP,         STATE_IDLE },      /* 松手取消 → 返回空闲 */
-    /* Phase 2 还没有语音管线，进 LISTENING 后 ASR/Touch_Up 永远不会来，
-     * 不加这两条用户会被困在对话页出不去（R7 实测教训）：
-     *   - 再点一下屏幕 → 回主页（scr_chat 的 Live2D 区域点击发 SCREEN_TAP） */
-    { STATE_LISTENING, EVENT_SCREEN_TAP,       STATE_IDLE },      /* 点击取消监听 → 返回空闲 */
-    { STATE_LISTENING, EVENT_NAV_HOME,         STATE_IDLE },      /* 对话页返回按钮 → 回主页 */
 
     /* ===== THINKING（思考）状态下的转移规则 ===== */
     { STATE_THINKING,  EVENT_LLM_TOKEN,        STATE_SPEAKING },  /* 收到AI回复 → 开始播放 */

@@ -27,10 +27,13 @@ extern "C" {
  * @brief 页面 ID 枚举
  *
  * 每个页面对应系统的一个功能界面。
+ *
+ * R8 修订（brainstorm 决策）：独立 Chat 页已拆除——"对话"不再是
+ * 一个可以去的页面，而是 Home 页的状态层（字幕升高+波形+状态点，
+ * Phase 3 语音链路就绪时实现，规格见任务 phase2-ui-home-polish 的 prd）。
  */
 typedef enum {
     UI_PAGE_HOME = 0,   /* 主页：显示角色待机画面 + 状态栏 + 字幕 */
-    UI_PAGE_CHAT,       /* 对话页：显示对话字幕 + 语音波形 + 停止按钮 */
     UI_PAGE_MUSIC,      /* 音乐页：（Phase 4 实现）*/
     UI_PAGE_POMODORO,   /* 番茄钟页：（Phase 5 实现）*/
     UI_PAGE_DIARY,      /* 日记页：（Phase 4 实现）*/
@@ -81,7 +84,7 @@ void ui_manager_update_status_bar(bool wifi_connected, const char *time_str);
 /**
  * @brief 显示字幕文本
  *
- * 在 Chat 页面的字幕区显示文本。
+ * 在 Home 页的底部字幕区显示文本（独立 Chat 页已拆除，字幕常驻主页）。
  *
  * @param[in] text  要显示的文本内容
  */

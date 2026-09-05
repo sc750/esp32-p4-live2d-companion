@@ -5,12 +5,12 @@
  * LVGL 图形库由 BSP 内部初始化和驱动（通过 espp::Display 类）。
  * 本模块只负责创建页面和管理页面切换。
  *
- * 页面切换逻辑：
- *   状态机 STATE_IDLE    → 显示 Home 页面
- *   状态机 STATE_LISTENING/THINKING/SPEAKING → 显示 Chat 页面
+ * 页面切换逻辑（R9 修订）：
+ *   状态机 STATE_IDLE → 显示 Home 页面（唯一可见页面）
+ *   LISTENING/THINKING/SPEAKING → Phase 3 在主页叠加状态层，不切页
  *
  * @date    2026-09-01
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 /* 1. 自身公开头 */
@@ -21,12 +21,12 @@
 
 /* 3. 项目级 */
 #include "scr_home.h"            /* Home 页面 */
-#include "scr_chat.h"            /* Chat 页面 */
 #include "theme_manager.h"       /* 主题管理 */
 #include "app_state_machine.h"   /* 状态机 */
 #include "app_events.h"          /* 事件类型 */
-#include "rig_lvgl.h"            /* 角色搬家（R8：角色常驻两页面） */
 #include "event_bus.h"           /* 事件总线 */
+/* 注：rig_lvgl.h / scr_chat.h 已随 R9 拆除独立 Chat 页移除。
+ * "对话=主页状态层"（波形/状态点）Phase 3 实现时再引入。 */
 
 /* 4. 平台/厂商头 */
 #include "esp_log.h"
@@ -56,14 +56,12 @@ static ui_page_id_t s_current_page = UI_PAGE_COUNT;
 static lv_obj_t *s_scr_main = NULL;
 
 /**
- * @brief 状态变化回调：当状态机状态改变时，自动切换页面 + 搬角色 + 更新状态指示
+ * @brief 状态变化回调：状态机状态改变时的 UI 联动
  *
- * R8 行为：
- *   IDLE    → Home 页，角色搬回主页（fit_h=480 满高）
- *   LISTENING/THINKING/SPEAKING → Chat 页，角色搬进对话页（fit_h=386），
- *                                状态圆点变色（蓝=听/橙=想/绿=说）
- *
- * 角色未创建时 rig_lvgl_set_parent 返回错误，静默忽略（开机早期只有 IDLE）。
+ * R9 修订（对话=主页状态层）：只有 IDLE 一个可见页面。
+ * LISTENING/THINKING/SPEAKING 不再切换页面——Phase 3 语音链路就绪后，
+ * 在主页上叠加状态层（字幕升高+波形+状态点），规格已存档于
+ * 任务 phase2-ui-home-polish 的 prd.md。
  */
 static void on_state_change(app_state_t old_state, app_state_t new_state,
                             void *ctx)
@@ -71,32 +69,16 @@ static void on_state_change(app_state_t old_state, app_state_t new_state,
     (void)ctx;       /* 未使用 */
     (void)old_state; /* 未使用 */
 
-    const theme_colors_t *colors = theme_manager_get_colors();
-
-    /* 根据新状态决定显示哪个页面 */
     switch (new_state) {
         case STATE_IDLE:
-            ui_manager_navigate(UI_PAGE_HOME);   /* 空闲 → 显示主页 */
-            /* 角色搬回主页，恢复满高 480 */
-            rig_lvgl_set_parent(scr_home_get_live2d_area(), 480);
+            ui_manager_navigate(UI_PAGE_HOME);   /* 空闲 → 主页 */
             break;
         case STATE_LISTENING:
         case STATE_THINKING:
-        case STATE_SPEAKING: {
-            ui_manager_navigate(UI_PAGE_CHAT);   /* 对话中 → 显示对话页 */
-            /* 角色搬进对话页，高度收窄为对话页角色区 386 */
-            rig_lvgl_set_parent(scr_chat_get_live2d_area(),
-                                SCR_CHAT_LIVE2D_FIT_H);
-            /* 状态指示：圆点颜色区分阶段（监=蓝 / 思=橙 / 说=绿） */
-            if (new_state == STATE_LISTENING) {
-                scr_chat_set_state("监听中", colors->primary_color);
-            } else if (new_state == STATE_THINKING) {
-                scr_chat_set_state("思考中", lv_color_hex(0xE67E22));
-            } else {
-                scr_chat_set_state("说话中", lv_color_hex(0x27AE60));
-            }
+        case STATE_SPEAKING:
+            /* Phase 2 无语音链路，这些状态不可达（状态机已无入口）。
+             * Phase 3 接入语音后在此点亮主页状态层，不切页面。 */
             break;
-        }
         default:
             break;  /* 其他状态不切换页面 */
     }
@@ -126,15 +108,12 @@ esp_err_t ui_manager_init(void)
     /* 初始化所有页面 */
     memset(s_pages, 0, sizeof(s_pages));  /* 清空页面数组 */
 
-    /* 创建 Home 页面（主页：状态栏 + Live2D 占位 + 字幕栏） */
+    /* 创建 Home 页面（主页：状态栏 + Live2D 角色区 + 字幕栏） */
     s_pages[UI_PAGE_HOME].container = scr_home_create(s_scr_main);
     s_pages[UI_PAGE_HOME].page_id = UI_PAGE_HOME;
     s_pages[UI_PAGE_HOME].is_created = true;
 
-    /* 创建 Chat 页面（对话页：字幕 + 波形 + 停止按钮） */
-    s_pages[UI_PAGE_CHAT].container = scr_chat_create(s_scr_main);
-    s_pages[UI_PAGE_CHAT].page_id = UI_PAGE_CHAT;
-    s_pages[UI_PAGE_CHAT].is_created = true;
+    /* 独立 Chat 页已拆除（R9，对话=主页状态层），其余页面按 Phase 推进再建 */
 
     /* 默认显示首页 */
     ui_manager_navigate(UI_PAGE_HOME);
@@ -190,6 +169,6 @@ void ui_manager_update_status_bar(bool wifi_connected, const char *time_str)
 
 void ui_manager_set_subtitle(const char *text)
 {
-    /* 转发给 Chat 页面的字幕更新函数 */
-    scr_chat_set_subtitle(text);
+    /* 字幕常驻主页（独立 Chat 页已拆除） */
+    scr_home_set_subtitle(text);
 }

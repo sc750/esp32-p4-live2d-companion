@@ -2,16 +2,15 @@
  * @file    scr_home.c
  * @brief   Home Screen 实现
  *
- * 主界面是用户看到的第一个画面，包含：
- *   - 顶部状态栏：显示 Wi-Fi 连接状态和当前时间
- *   - 中间区域：Live2D 角色占位（Phase 2 实现 PainterEngine 集成）
- *   - 底部字幕栏：半透明黑色背景，显示 AI 的回复文本
+ * 主界面（R9 起：全应用唯一可见页面，"对话=主页状态层"）：
+ *   - 顶部状态栏：Wi-Fi 状态 + 当前时间
+ *   - 中间区域：Live2D 角色（唯一交互目标：五种触摸表情）
+ *   - 底部字幕栏：AI 回复 / 三玖闲聊轮播文案
  *
- * 用户触摸中间区域会触发 EVENT_SCREEN_TAP 事件，
- * 状态机收到后切换到 LISTENING 状态，进入对话界面。
+ * 点屏幕空白无反应（R9）；Phase 3 语音接入后空白点击=开始说话。
  *
  * @date    2026-09-01
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 /* 1. 自身公开头 */
@@ -23,9 +22,8 @@
 
 /* 3. 项目级 */
 #include "theme_manager.h"    /* 主题管理：获取当前主题颜色 */
-#include "app_events.h"       /* 事件类型定义 */
-#include "app_state_machine.h" /* 状态机：直发 SCREEN_TAP 事件 */
 #include "nino_font.h"        /* 自定义中文字体 nino_cjk_16 */
+/* 注：app_state_machine/app_events 已随 R9 拆除"点空白触发对话"移除 */
 
 /* 4. 平台/厂商头 */
 #include "esp_log.h"
@@ -56,9 +54,6 @@ typedef struct {
 
 /* Home 页面的 UI 对象实例（静态全局，本模块独占） */
 static home_ui_t s_home_ui;
-
-/* 前向声明：触摸点击回调函数 */
-static void on_tap_clicked(lv_event_t *e);
 
 /**
  * @brief 创建顶部状态栏
@@ -122,34 +117,14 @@ static void create_live2d_area(lv_obj_t *parent)
     /* 角色区域不滚动（拖动手势留给头部跟随，M03 R5b） */
     lv_obj_clear_flag(s_home_ui.live2d_area, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* 占位提示已移除：角色自 M03 R5b 起渲染到本区域（scr_home_get_live2d_area） */
-
-    /* 注册触摸点击事件：用户点击此区域 → 发送 EVENT_SCREEN_TAP */
-    lv_obj_add_event_cb(s_home_ui.live2d_area, on_tap_clicked,
-                        LV_EVENT_CLICKED, NULL);
-    lv_obj_add_flag(s_home_ui.live2d_area, LV_OBJ_FLAG_CLICKABLE);  /* 启用点击 */
+    /* R9（对话=主页状态层）：点击空白不再触发对话——交互只围绕角色本体
+     * （角色 lv_image 自身 CLICKABLE，五种触摸表情由 rig_lvgl 手势识别处理）。
+     * Phase 3 语音链路就绪后，空白点击将作为"开始说话"触发器回归。 */
 }
 
 lv_obj_t *scr_home_get_live2d_area(void)
 {
     return s_home_ui.live2d_area;
-}
-
-/**
- * @brief 触摸点击回调函数
- *
- * 当用户点击 Live2D 区域时，发送 EVENT_SCREEN_TAP 事件。
- * 状态机收到后会切换到 LISTENING 状态，进入对话流程。
- */
-static void on_tap_clicked(lv_event_t *e)
-{
-    (void)e;  /* 未使用事件参数 */
-    ESP_LOGI(TAG, "角色区域被点击，开始对话...");
-
-    /* 直调状态机（与 scr_chat.c 的按钮同款模式）。
-     * 注意：不能走 event_bus_post()——全工程没有任何 event_bus_subscribe()
-     * 订阅者，事件 post 进总线会直接蒸发（R6 实测教训：点击无反应的祖传播）。 */
-    app_state_machine_send_event(EVENT_SCREEN_TAP, NULL);
 }
 
 /**
