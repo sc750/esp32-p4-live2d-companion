@@ -85,6 +85,17 @@ void rig_rig_trigger(rig_expr_t expr);
 /** 外部口型驱动（TTS 接入后由音频层调用；未驱动时内部演示循环接管） */
 void rig_rig_set_mouth(rig_mouth_t level);
 
+/**
+ * @brief 按需说一句话（R10 闲聊轮播用）
+ *
+ * 让口型以 150ms 步进串播 duration_ms 长（模拟说话），期间 idle 演示串
+ * 让位；外部 TTS 驱动（set_mouth）优先级更高。表情激活期间口型被表情
+ * 接管，本调用只排队不生效（说完了表情结束自动恢复）。
+ *
+ * @param duration_ms 说话持续时长（如按文案字数 × 220ms 估算）
+ */
+void rig_rig_speak(uint32_t duration_ms);
+
 #ifdef __cplusplus
 }
 #endif

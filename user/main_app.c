@@ -11,21 +11,41 @@
 #include "user_app.h"
 
 #include <stdio.h>
+#include <string.h>
 #include "bsp_init.h"
+#include "bsp_wifi.h"
 #include "event_bus.h"
 #include "memory_manager.h"
 #include "app_config.h"
 #include "app_state_machine.h"
 #include "ui_manager.h"
+#include "ui_bridge.h"
+#include "time_sync.h"
 #include "rig_model.h"
 #include "rig_lvgl.h"
 #include "rig_rig.h"
+#include "rig_chatter.h"
 #include "scr_home.h"
+#include "ui_bridge.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 static const char *TAG = "main";
+
+/**
+ * @brief 闲聊回调：chatter 挑好一句话 → 更新主页字幕 + 让口型动起来
+ *
+ * 上下文：主循环任务（rig_chatter_tick 的调用方）。字幕更新走 ui_bridge
+ * （内部拿 adapter 锁），口型 rig_rig_speak 只写两个 u32（与渲染任务
+ * 之间为良性单写竞态，RISC-V 32 位对齐写原子）。
+ */
+static void on_chatter_line(const char *text, uint32_t speak_ms, void *ctx)
+{
+    (void)ctx;
+    ui_bridge_set_subtitle(text);
+    rig_rig_speak(speak_ms);
+}
 
 void user_app_run(void)
 {
@@ -48,7 +68,7 @@ void user_app_run(void)
     /* 4. UI 初始化 */
     ESP_ERROR_CHECK(ui_manager_init());
 
-    /* 5. 角色加载 + 动画渲染（M03 R5b：入住 live2d_area + 触摸跟随） */
+    /* 5. 角色加载 + 动画渲染（M03 R5b：入住 live2d_area + 触摸表情） */
     static rig_model_t s_model;
     if (rig_model_load_default(&s_model) == ESP_OK &&
         rig_rig_init(&s_model) == ESP_OK) {
@@ -56,6 +76,10 @@ void user_app_run(void)
         /* fit_h=480 与 pack 的 max_height 一致——LVGL 1:1 绘制，无二次缩放 */
         rig_lvgl_create(area, &s_model, 480);
         rig_lvgl_start(30);
+
+        /* 闲聊轮播（R10）：定时给字幕区投喂三玖语录 + 口型联动 */
+        ESP_ERROR_CHECK(rig_chatter_init());
+        rig_chatter_set_callback(on_chatter_line, NULL);
     } else {
         ESP_LOGW(TAG, "角色模型加载失败，继续启动");
     }
@@ -65,9 +89,28 @@ void user_app_run(void)
 
     ESP_LOGI(TAG, "系统就绪！进入主循环...");
 
-    /* 主循环 */
+    /* 主循环：闲聊节拍 + 状态栏时钟 + 周期内存报告 */
+    char last_time[8] = "";
+    bool last_wifi = false;
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
+
+        /* 闲聊轮播节拍（内部自带 3~8 分钟随机间隔，1s 粒度足够） */
+        rig_chatter_tick();
+
+        /* SNTP：联网即启动（幂等）；分钟变化或 Wi-Fi 翻转才刷状态栏，
+         * 避免 1Hz 重绘 */
+        const bool wifi = bsp_wifi_is_connected();
+        if (wifi) {
+            time_sync_start();
+        }
+        char now_buf[8] = "--:--";
+        time_sync_get_hhmm(now_buf, sizeof(now_buf));
+        if (wifi != last_wifi || strcmp(now_buf, last_time) != 0) {
+            ui_bridge_update_status_bar(wifi, now_buf);
+            last_wifi = wifi;
+            memcpy(last_time, now_buf, sizeof(now_buf));
+        }
 
         /* 每 60 秒打印内存报告 */
         static int tick_count = 0;

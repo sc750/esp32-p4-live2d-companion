@@ -105,6 +105,8 @@ typedef struct {
     bool mouth_ext_active;          /* 外部驱动是否生效 */
     uint32_t burst_start_ms;        /* 当前 idle 说话串起点 */
     uint32_t next_burst_ms;         /* 下一串什么时候开始 */
+    uint32_t speak_start_ms;        /* 按需说话（rig_rig_speak）起点 */
+    uint32_t speak_until_ms;        /* 按需说话截止时刻（0=没在说） */
 
     /* ---- 表情状态机 ---- */
     rig_expr_t expr;            /* 当前表情（NONE=待机） */
@@ -175,19 +177,34 @@ void rig_rig_set_mouth(rig_mouth_t level)
     s.mouth_ext_active = true;
 }
 
-/** idle 口型目标（外部 TTS 驱动优先，其次演示串，平时闭嘴） */
+void rig_rig_speak(uint32_t duration_ms)
+{
+    const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    s.speak_start_ms = now;
+    s.speak_until_ms = now + duration_ms;
+}
+
+/** 口型步进串：150ms 一步 half→open→half→closed，模拟说话节奏 */
+static rig_mouth_t mouth_seq_at(uint32_t t_ms)
+{
+    static const rig_mouth_t seq[4] = {
+        RIG_MOUTH_HALF, RIG_MOUTH_OPEN, RIG_MOUTH_HALF, RIG_MOUTH_CLOSED
+    };
+    return seq[(t_ms / 150) % 4];
+}
+
+/** 口型目标：外部 TTS 驱动 > 按需说话（闲聊） > idle 演示串 > 闭嘴 */
 static rig_mouth_t mouth_target(uint32_t now)
 {
     if (s.mouth_ext_active) {
         return s.mouth_ext;
     }
+    if (s.speak_until_ms > now) {
+        return mouth_seq_at(now - s.speak_start_ms);
+    }
     uint32_t t = now - s.burst_start_ms;
     if (t < MOUTH_BURST_MS) {
-        /* 串内 150ms 步进 half→open→half→closed 循环，模拟说话 */
-        static const rig_mouth_t seq[4] = {
-            RIG_MOUTH_HALF, RIG_MOUTH_OPEN, RIG_MOUTH_HALF, RIG_MOUTH_CLOSED
-        };
-        return seq[(t / 150) % 4];
+        return mouth_seq_at(t);
     }
     return RIG_MOUTH_CLOSED;
 }
