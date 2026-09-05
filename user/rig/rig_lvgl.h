@@ -32,6 +32,21 @@ extern "C" {
 lv_obj_t *rig_lvgl_create(lv_obj_t *parent, const rig_model_t *m, int fit_h);
 
 /**
+ * @brief 把角色"搬家"到新的父容器（角色常驻多页面，R8 新增）
+ *
+ * 场景：主页 ↔ 对话页切换时，把角色 image 无缝搬到当前页的角色区，
+ * 避免角色"只在主页活着、进对话页就消失"的割裂感。
+ *
+ * 内部持 adapter 锁做 set_parent + 重新适配高度（fit_h 变了会按
+ * CONTAIN 等比重缩内容）。角色未创建时返回错误，UI 侧可安全调用。
+ *
+ * @param parent    新父容器（如 scr_chat_get_live2d_area()）
+ * @param fit_h     新容器内的适配高度（如 SCR_CHAT_LIVE2D_FIT_H）
+ * @return ESP_OK 成功；ESP_ERR_INVALID_STATE 角色未创建
+ */
+esp_err_t rig_lvgl_set_parent(lv_obj_t *parent, int fit_h);
+
+/**
  * @brief 启动渲染任务（Core 1，~30fps）
  * @param fps 目标帧率（1~60，0/非法按 30）
  */

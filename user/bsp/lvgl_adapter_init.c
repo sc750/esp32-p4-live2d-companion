@@ -85,6 +85,13 @@ lv_display_t *lvgl_adapter_init(const bsp_display_config_t *cfg)
     return disp;
 }
 
+/**
+ * @brief 取 BSP 注册好的触摸输入设备（Codex R5 新增，注释补注）
+ *
+ * 注册时把 indev 指针存进静态变量，这里直接返回——比上层自己遍历
+ * lv_indev_get_next() 猜哪个是触摸更可靠（R5 曾误绑 encoder 的教训）。
+ * 触摸未初始化/注册失败时返回 NULL，调用方自行降级。
+ */
 lv_indev_t *lvgl_adapter_get_touch_indev(void)
 {
     return s_touch_indev;

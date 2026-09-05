@@ -17,14 +17,19 @@ idf_component_register(SRCS "main_app.c"
                             "ui/ui_manager.c"
                             "ui/scr_home.c"
                             "ui/scr_chat.c"
+                            "ui/fonts/lv_font_nino_cjk_16.c"
                             "ui/themes/theme_manager.c"
                     INCLUDE_DIRS "."
                                 "app"
                                 "bsp"
                                 "core"
                                 "ui"
+                                "ui/fonts"
                                 "ui/themes"
                                 "rig"
                     EMBED_FILES "../assets/character_01.rigbin"
                     REQUIRES nvs_flash esp_event esp_netif lvgl__lvgl esp_timer
                     PRIV_REQUIRES espressif__esp32_p4_function_ev_board_noglib espressif__esp_lvgl_adapter espressif__esp_codec_dev espressif__esp_video espressif__esp_wifi_remote esp_wifi esp_mm)
+
+# 生成的字体文件（ui/fonts/lv_font_nino_cjk_16.c）用该宏选择 #include "lvgl.h" 分支
+target_compile_definitions(${COMPONENT_LIB} PRIVATE LV_LVGL_H_INCLUDE_SIMPLE)

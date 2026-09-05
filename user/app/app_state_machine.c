@@ -53,6 +53,11 @@ static const state_transition_t s_transitions[] = {
     /* ===== LISTENING（监听）状态下的转移规则 ===== */
     { STATE_LISTENING, EVENT_ASR_FINAL,        STATE_THINKING },  /* 语音识别完成 → 进入思考 */
     { STATE_LISTENING, EVENT_TOUCH_UP,         STATE_IDLE },      /* 松手取消 → 返回空闲 */
+    /* Phase 2 还没有语音管线，进 LISTENING 后 ASR/Touch_Up 永远不会来，
+     * 不加这两条用户会被困在对话页出不去（R7 实测教训）：
+     *   - 再点一下屏幕 → 回主页（scr_chat 的 Live2D 区域点击发 SCREEN_TAP） */
+    { STATE_LISTENING, EVENT_SCREEN_TAP,       STATE_IDLE },      /* 点击取消监听 → 返回空闲 */
+    { STATE_LISTENING, EVENT_NAV_HOME,         STATE_IDLE },      /* 对话页返回按钮 → 回主页 */
 
     /* ===== THINKING（思考）状态下的转移规则 ===== */
     { STATE_THINKING,  EVENT_LLM_TOKEN,        STATE_SPEAKING },  /* 收到AI回复 → 开始播放 */

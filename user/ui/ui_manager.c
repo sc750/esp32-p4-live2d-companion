@@ -24,6 +24,8 @@
 #include "scr_chat.h"            /* Chat 页面 */
 #include "theme_manager.h"       /* 主题管理 */
 #include "app_state_machine.h"   /* 状态机 */
+#include "app_events.h"          /* 事件类型 */
+#include "rig_lvgl.h"            /* 角色搬家（R8：角色常驻两页面） */
 #include "event_bus.h"           /* 事件总线 */
 
 /* 4. 平台/厂商头 */
@@ -54,9 +56,14 @@ static ui_page_id_t s_current_page = UI_PAGE_COUNT;
 static lv_obj_t *s_scr_main = NULL;
 
 /**
- * @brief 状态变化回调：当状态机状态改变时，自动切换页面
+ * @brief 状态变化回调：当状态机状态改变时，自动切换页面 + 搬角色 + 更新状态指示
  *
- * 例如：从 IDLE 切换到 LISTENING 时，自动从 Home 页面切换到 Chat 页面。
+ * R8 行为：
+ *   IDLE    → Home 页，角色搬回主页（fit_h=480 满高）
+ *   LISTENING/THINKING/SPEAKING → Chat 页，角色搬进对话页（fit_h=386），
+ *                                状态圆点变色（蓝=听/橙=想/绿=说）
+ *
+ * 角色未创建时 rig_lvgl_set_parent 返回错误，静默忽略（开机早期只有 IDLE）。
  */
 static void on_state_change(app_state_t old_state, app_state_t new_state,
                             void *ctx)
@@ -64,16 +71,32 @@ static void on_state_change(app_state_t old_state, app_state_t new_state,
     (void)ctx;       /* 未使用 */
     (void)old_state; /* 未使用 */
 
+    const theme_colors_t *colors = theme_manager_get_colors();
+
     /* 根据新状态决定显示哪个页面 */
     switch (new_state) {
         case STATE_IDLE:
             ui_manager_navigate(UI_PAGE_HOME);   /* 空闲 → 显示主页 */
+            /* 角色搬回主页，恢复满高 480 */
+            rig_lvgl_set_parent(scr_home_get_live2d_area(), 480);
             break;
         case STATE_LISTENING:
         case STATE_THINKING:
-        case STATE_SPEAKING:
+        case STATE_SPEAKING: {
             ui_manager_navigate(UI_PAGE_CHAT);   /* 对话中 → 显示对话页 */
+            /* 角色搬进对话页，高度收窄为对话页角色区 386 */
+            rig_lvgl_set_parent(scr_chat_get_live2d_area(),
+                                SCR_CHAT_LIVE2D_FIT_H);
+            /* 状态指示：圆点颜色区分阶段（监=蓝 / 思=橙 / 说=绿） */
+            if (new_state == STATE_LISTENING) {
+                scr_chat_set_state("监听中", colors->primary_color);
+            } else if (new_state == STATE_THINKING) {
+                scr_chat_set_state("思考中", lv_color_hex(0xE67E22));
+            } else {
+                scr_chat_set_state("说话中", lv_color_hex(0x27AE60));
+            }
             break;
+        }
         default:
             break;  /* 其他状态不切换页面 */
     }

@@ -71,11 +71,19 @@ static inline void blit_row(rig_px_t *dst, const uint8_t *src, int n)
             dst->a = 255;
             continue;
         }
-        /* out = src*a + dst*(255-a)，四舍五入 */
-        const uint16_t ia = 255 - a;
+        /* 中间 alpha：标准 src-over 直通 alpha 合成（Codex R5 修正版，注释补注）。
+         *
+         * 旧版把 dst 当"已预乘"处理，半透明层叠半透明层时会颜色偏暗。
+         * 正确的直通 alpha（非预乘）合成公式：
+         *   out_a = src_a + dst_a·(1-src_a)
+         *   out_c = (src_c·src_a + dst_c·dst_a·(1-src_a)) / out_a
+         * 全程用 255 基准整数运算：ia=255-a 即 (1-src_a)，
+         * 分母 out_a·255 防零（oa==0 说明两层全透明，直接跳过）。
+         * 末尾 +127/255 做四舍五入，减少累积取整误差。 */
         const uint16_t da = dst->a;
-        const uint16_t oa = (uint16_t)a + (uint16_t)((da * ia + 127) / 255);
-        if (oa == 0) continue;
+        const uint16_t ia = 255 - a;                        /* 1 - src_a */
+        const uint16_t oa = (uint16_t)a + (uint16_t)((da * ia + 127) / 255);  /* 新合成 alpha */
+        if (oa == 0) continue;                              /* 两层都全透明，无事可做 */
         dst->r = (uint8_t)(((uint32_t)src[0] * a * 255U +
                             (uint32_t)dst->r * da * ia + oa * 127U) /
                            ((uint32_t)oa * 255U));

@@ -24,7 +24,8 @@
 /* 3. 项目级 */
 #include "theme_manager.h"    /* 主题管理：获取当前主题颜色 */
 #include "app_events.h"       /* 事件类型定义 */
-#include "event_bus.h"        /* 事件总线：发送触摸事件 */
+#include "app_state_machine.h" /* 状态机：直发 SCREEN_TAP 事件 */
+#include "nino_font.h"        /* 自定义中文字体 nino_cjk_16 */
 
 /* 4. 平台/厂商头 */
 #include "esp_log.h"
@@ -75,19 +76,21 @@ static void create_status_bar(lv_obj_t *parent)
     lv_obj_set_flex_align(s_home_ui.status_bar, LV_FLEX_ALIGN_SPACE_BETWEEN,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     /* 半透明背景 */
-    lv_obj_set_style_bg_opa(s_home_ui.status_bar, LV_OPA_80, 0);
-
-    /* 获取当前主题颜色 */
     const theme_colors_t *colors = theme_manager_get_colors();
     lv_obj_set_style_bg_color(s_home_ui.status_bar, colors->status_bar_bg, 0);
+    /* R8：lv_obj 默认主题 pad=20 会把 40px 高的栏撑爆（文字上溢），
+     * 必须显式 pad_all(0) 后只留左右内边距 */
+    lv_obj_set_style_pad_all(s_home_ui.status_bar, 0, 0);
     lv_obj_set_style_pad_hor(s_home_ui.status_bar, 16, 0);  /* 左右内边距 16px */
+    lv_obj_set_style_bg_opa(s_home_ui.status_bar, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s_home_ui.status_bar, 0, 0);  /* 无边框 */
     lv_obj_set_style_radius(s_home_ui.status_bar, 0, 0);  /* 无圆角 */
 
-    /* Wi-Fi 图标（用 LV_SYMBOL_WIFI 字符图标 + 文字） */
+    /* Wi-Fi 图标（中文状态文字，nino_cjk_16 字体含 ASCII 可混排） */
     s_home_ui.wifi_icon = lv_label_create(s_home_ui.status_bar);
-    lv_label_set_text(s_home_ui.wifi_icon, "WiFi: Disconnected");
+    lv_label_set_text(s_home_ui.wifi_icon, "WiFi 未连接");
     lv_obj_set_style_text_color(s_home_ui.wifi_icon, colors->text_color, 0);
+    lv_obj_set_style_text_font(s_home_ui.wifi_icon, nino_font_cjk16(), 0);
 
     /* 时间标签（默认显示 00:00） */
     s_home_ui.time_label = lv_label_create(s_home_ui.status_bar);
@@ -143,9 +146,10 @@ static void on_tap_clicked(lv_event_t *e)
     (void)e;  /* 未使用事件参数 */
     ESP_LOGI(TAG, "角色区域被点击，开始对话...");
 
-    /* 通过事件总线发送点击事件 */
-    app_event_payload_t payload = {0};  /* 载荷为空 */
-    event_bus_post(EVENT_SCREEN_TAP, &payload);
+    /* 直调状态机（与 scr_chat.c 的按钮同款模式）。
+     * 注意：不能走 event_bus_post()——全工程没有任何 event_bus_subscribe()
+     * 订阅者，事件 post 进总线会直接蒸发（R6 实测教训：点击无反应的祖传播）。 */
+    app_state_machine_send_event(EVENT_SCREEN_TAP, NULL);
 }
 
 /**
@@ -159,25 +163,26 @@ static void create_subtitle_bar(lv_obj_t *parent)
     s_home_ui.subtitle_bar = lv_obj_create(parent);
     lv_obj_set_size(s_home_ui.subtitle_bar, SCR_WIDTH, SUBTITLE_BAR_H);
 
-    /* 设置半透明黑色背景 */
+    /* 设置黑色背景（R8：改为不透明，半透明叠透明容器的效果发灰） */
     const theme_colors_t *colors = theme_manager_get_colors();
-    lv_obj_set_style_bg_opa(s_home_ui.subtitle_bar, LV_OPA_80, 0);  /* 80% 不透明 */
     lv_obj_set_style_bg_color(s_home_ui.subtitle_bar, colors->caption_bg, 0);
+    lv_obj_set_style_bg_opa(s_home_ui.subtitle_bar, LV_OPA_80, 0);
     lv_obj_set_style_border_width(s_home_ui.subtitle_bar, 0, 0);  /* 无边框 */
     lv_obj_set_style_radius(s_home_ui.subtitle_bar, 0, 0);        /* 无圆角 */
+    lv_obj_set_style_pad_all(s_home_ui.subtitle_bar, 0, 0);
 
     /* 居中排列子元素 */
     lv_obj_set_flex_flow(s_home_ui.subtitle_bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(s_home_ui.subtitle_bar, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    /* 字幕文本标签 */
+    /* 字幕文本标签（中文用 nino_cjk_16 字体） */
     s_home_ui.subtitle_label = lv_label_create(s_home_ui.subtitle_bar);
     lv_label_set_text(s_home_ui.subtitle_label, "你好！点击角色开始聊天 ~");
     lv_obj_set_style_text_color(s_home_ui.subtitle_label,
                                 lv_color_hex(0xFFFFFF), 0);  /* 白色文字 */
     lv_obj_set_style_text_font(s_home_ui.subtitle_label,
-                               &lv_font_montserrat_14, 0);
+                               nino_font_cjk16(), 0);
     /* 超长文本自动截断显示省略号 */
     lv_label_set_long_mode(s_home_ui.subtitle_label, LV_LABEL_LONG_DOT);
     lv_obj_set_width(s_home_ui.subtitle_label, SCR_WIDTH - 40);
@@ -231,13 +236,13 @@ void scr_home_update_status_bar(bool wifi_connected, const char *time_str)
     const theme_colors_t *colors = theme_manager_get_colors();
 
     if (wifi_connected) {
-        /* 已连接：蓝色图标 */
-        lv_label_set_text(s_home_ui.wifi_icon, "WiFi: Connected");
+        /* 已连接：主题蓝色高亮 */
+        lv_label_set_text(s_home_ui.wifi_icon, "WiFi 已连接");
         lv_obj_set_style_text_color(s_home_ui.wifi_icon,
                                     colors->primary_color, 0);
     } else {
-        /* 未连接：白色图标 */
-        lv_label_set_text(s_home_ui.wifi_icon, "WiFi: Disconnected");
+        /* 未连接：默认文字色 */
+        lv_label_set_text(s_home_ui.wifi_icon, "WiFi 未连接");
         lv_obj_set_style_text_color(s_home_ui.wifi_icon,
                                     colors->text_color, 0);
     }

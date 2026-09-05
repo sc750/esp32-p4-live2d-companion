@@ -289,9 +289,21 @@ def pack(src_dir, path):
     # touch.  The runtime keeps motion within this band.
     overlap = max(8, int(H * 0.05))
 
+    # 变体清单：文件名 → rigbin 图层名（固件 rig_rig.c 按名索引点亮）。
+    # 每个变体与 base 做像素差分 → 只保留真变化区域（眼/嘴/腮红），
+    # 发丝间隙等未变化区域的背景残留不会混进补丁（R5c 机制）。
+    # 注意：变体图必须与 base 同构图（同姿势白底），只改目标元素。
     variants = {}
-    for fn, name in [("eyes_closed.png", "eyes_closed"),
-                     ("mouth_half.png", "mouth_half"), ("mouth_open.png", "mouth_open")]:
+    VARIANT_FILES = [
+        ("eyes_closed.png", "eyes_closed"),   # 闭眼（眨眼 / 被摸头蹭蹭）
+        ("eyes_smile.png",  "eyes_smile"),    # 笑眼 ^_^（害羞 / 大笑）
+        ("eyes_wide.png",   "eyes_wide"),     # 惊讶圆眼（被戳身体）
+        ("mouth_half.png",  "mouth_half"),    # 嘴微张（idle 说话串）
+        ("mouth_open.png",  "mouth_open"),    # 嘴大开（说话 / 大笑）
+        ("mouth_pout.png",  "mouth_pout"),    # 嘟嘴（闹脾气）
+        ("blush.png",       "blush"),         # 腮红（害羞系叠加层）
+    ]
+    for fn, name in VARIANT_FILES:
         p = os.path.join(src_dir, fn)
         if os.path.exists(p):
             var = extract(Image.open(p))
