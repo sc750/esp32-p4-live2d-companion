@@ -133,17 +133,39 @@ def verify():
     return 0
 
 
+def build_charset():
+    """GB2312 全集（6763 字：一级 3755 常用 + 二级 3008 次常用）+ 手工符号集
+
+    R13：LLM 回复是动态文本，手搓几百字必出豆腐块——直接上 GB2312 全集
+    （PRD M02 字体规划的原方案）。16px 4bpp 全集约 1.3MB flash，可承受。
+    """
+    chars = set()
+    # GB2312 汉字区：行 0xB0-0xF7，列 0xA1-0xFE（部分空位跳过）
+    for hi in range(0xB0, 0xF8):
+        for lo in range(0xA1, 0xFF):
+            try:
+                chars.add(bytes([hi, lo]).decode("gb2312"))
+            except UnicodeDecodeError:
+                pass                    # 空位
+    # 手工补充：全角标点 + 特殊符号（GB2312 汉字区外）
+    chars.update(set(c for c in CHARSET if ord(c) > 127))
+    return chars
+
+
 def main():
     # --verify：只做覆盖校验不生成（提交前/CI 机械门禁用）
     if "--verify" in sys.argv:
         sys.exit(verify())
-    # 去重去 ASCII
-    symbols = "".join(sorted(set(c for c in CHARSET if ord(c) > 127)))
-    print(f"[fontgen] 符号集 {len(symbols)} 字: {symbols}")
+    symbols = "".join(sorted(build_charset()))
+    print(f"[fontgen] 符号集 {len(symbols)} 字（GB2312 全集+符号）")
 
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
+    # Windows cmd 参数上限 8K，GB2312 六千字会爆——用 npx 全路径 + 参数列表
+    # （CreateProcess 上限 32K，11KB 的符号串安全）
+    import shutil
+    npx = shutil.which("npx.cmd") or shutil.which("npx")
     cmd = [
-        "npx", "--yes", "lv_font_conv",
+        npx, "--yes", "lv_font_conv",
         "--font", FONT,
         "--size", "16",
         "--bpp", "4",
@@ -154,8 +176,8 @@ def main():
         "--no-compress",
         "-o", OUT,
     ]
-    print("[fontgen]", " ".join(cmd))
-    r = subprocess.run(cmd, shell=(os.name == "nt"))
+    print(f"[fontgen] 调用 {os.path.basename(npx)}（符号 {len(symbols)} 字走参数列表）")
+    r = subprocess.run(cmd)
     if r.returncode != 0:
         sys.exit("[fontgen] lv_font_conv 失败")
     size = os.path.getsize(OUT)
