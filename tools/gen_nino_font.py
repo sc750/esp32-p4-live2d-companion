@@ -9,14 +9,23 @@ gen_nino_font.py — 生成三玖桌面助手专用的 CJK LVGL 字体（nino_cj
   内置字库救不了 → 自己用 Windows 自带黑体（simhei.ttf）生成精确覆盖。
 
 用法：
-  py tools/gen_nino_font.py          # 生成 user/ui/fonts/lv_font_nino_cjk_16.c
+  py tools/gen_nino_font.py            # 生成 user/ui/fonts/lv_font_nino_cjk_16.c
+  py tools/gen_nino_font.py --verify   # 只校验：全工程上屏字符串 ⊆ 当前字库？
 
 加字流程：
   1. 往下面 CHARSET 里加字符
   2. 重跑本脚本，重新编译固件即可
   （16px 4bpp 每字约 200B flash，100 字 ≈ 20KB，放心加）
+
+防复发（break-loop R12 沉淀）：
+  豆腐块的根因是"文案改动与字库不同步"且编译期零感知。
+  --verify 模式扫描 user/ 全部 .c/.h 的字符串字面量（排除 ESP_LOGx
+  日志行——串口日志不上屏无字体问题），校验每个非 ASCII 字符都在
+  当前 CHARSET/字库覆盖内，缺失则 exit 1——接进提交前检查即可机械拦截。
 """
+import glob
 import os
+import re
 import subprocess
 import sys
 
@@ -50,7 +59,84 @@ CHARSET = (
 OUT = os.path.join("user", "ui", "fonts", "lv_font_nino_cjk_16.c")
 FONT = r"C:\Windows\Fonts\simhei.ttf"
 
+
+def charset_chars():
+    """从本脚本源码提取 CHARSET 常量的非 ASCII 字符集（单一事实源）"""
+    src = open(__file__, encoding="utf-8").read()
+    block = src[src.index("CHARSET = ("):src.index(")", src.index("CHARSET = ("))]
+    return set(c for c in block if ord(c) > 127 and c not in "　")
+
+
+def font_covered_chars():
+    """解析生成的 LVGL 字体源码，返回其覆盖的 unicode 集合"""
+    path = os.path.join("user", "ui", "fonts", "lv_font_nino_cjk_16.c")
+    src = open(path, encoding="utf-8").read()
+    covered = set()
+    # FORMAT0_TINY 段：range_start..range_start+range_length 全覆盖
+    for m in re.finditer(
+            r"\.range_start = (\d+), \.range_length = (\d+), "
+            r"\.glyph_id_start = \d+,\s*\n?\s*\.unicode_list = NULL", src):
+        s0, l0 = int(m.group(1)), int(m.group(2))
+        covered.update(range(s0, s0 + l0))
+    # SPARSE_TINY 段：unicode_list_N[] + 所属 range 基址
+    lists = dict(re.findall(
+        r"static const uint16_t (unicode_list_\d+)\[\] = \{(.*?)\};", src, re.S))
+    for m in re.finditer(
+            r"\.range_start = (\d+), \.range_length = \d+, \.glyph_id_start = \d+,"
+            r"\s*\n?\s*\.unicode_list = (unicode_list_\d+),", src):
+        base = int(m.group(1))
+        for tok in re.findall(r"0x([0-9A-Fa-f]+)", lists.get(m.group(2), "")):
+            covered.add(base + int(tok, 16))
+    return covered
+
+
+def verify():
+    """校验上屏字符串的每个非 ASCII 字符都在字库覆盖内（机械门禁）
+
+    扫描范围 = user/ui/**（含 rig_chatter 语料引用链）+ user/rig/rig_chatter.c
+    ——全工程所有会送到 lv_label 的字符串都出自这些文件；ESP_LOGx 日志走
+    串口无字体问题，注释更是人类看的，都剥掉后再提取字符串字面量。
+    """
+    cs = charset_chars()
+    covered = font_covered_chars()
+    allowed = cs | covered          # CHARSET 声明的 ∪ 当前字库实际有的
+    scope = (glob.glob("user/ui/**/*.c", recursive=True)
+             + glob.glob("user/ui/**/*.h", recursive=True)
+             + ["user/rig/rig_chatter.c"])
+
+    def strip_comments(text):
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)   # 块注释
+        text = re.sub(r"//[^\n]*", "", text)                # 行注释
+        return text
+
+    str_re = re.compile(r'"([^"\\]|\\.)*"')
+    missing = {}                    # char -> 首个出现位置
+    for path in scope:
+        if "font" in path.replace("\\", "/").lower():
+            continue                # 字体数据文件自身跳过
+        text = strip_comments(open(path, encoding="utf-8", errors="ignore").read())
+        for lineno, line in enumerate(text.split("\n"), 1):
+            if line.lstrip().startswith("ESP_LOG"):
+                continue            # 串口日志不上屏
+            for lit in str_re.findall(line):
+                for c in lit:
+                    if ord(c) > 127 and c not in allowed:
+                        missing.setdefault(c, f"{path}:{lineno}")
+    if missing:
+        print(f"[verify] 缺失 {len(missing)} 字（会显示为豆腐块）：")
+        for c, loc in sorted(missing.items()):
+            print(f"  '{c}' U+{ord(c):04X}  首见 {loc}")
+        print("[verify] FAIL —— 加进 CHARSET 重跑生成，或改文案")
+        return 1
+    print(f"[verify] PASS —— 上屏字符串全部被字库覆盖"
+          f"（CHARSET {len(cs)} 字）")
+    return 0
+
+
 def main():
+    # --verify：只做覆盖校验不生成（提交前/CI 机械门禁用）
+    if "--verify" in sys.argv:
+        sys.exit(verify())
     # 去重去 ASCII
     symbols = "".join(sorted(set(c for c in CHARSET if ord(c) > 127)))
     print(f"[fontgen] 符号集 {len(symbols)} 字: {symbols}")
@@ -74,6 +160,8 @@ def main():
         sys.exit("[fontgen] lv_font_conv 失败")
     size = os.path.getsize(OUT)
     print(f"[fontgen] 生成 {OUT} ({size}B)")
+    # 生成完立即自校验（防"生成了但没覆盖全"）
+    sys.exit(verify())
 
 if __name__ == "__main__":
     main()

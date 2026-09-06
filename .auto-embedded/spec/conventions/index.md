@@ -33,3 +33,10 @@ EXECUTE 每完成一个清单项 + 用户确认 → 本地 `git add <具体文�
 - [约定] 改 sdkconfig.defaults 后必须删除 sdkconfig 重新生成（kconfgen：sdkconfig 已有条目含 is not set 优先于 defaults）；运行态调整用 menuconfig
 - [约定] 在官方 BSP 之上包同名前缀函数前，先 grep BSP 公开头文件确认无同名 API（bsp_audio_init 撞车教训）；照抄官方初始化代码必须逐字段 diff 配置结构体（dsi lane 速率=0 教训），且连 sdkconfig 配置一起对齐（cache line 64B→128B 教训）
 - [坑/gotcha] Windows 脚本编码纪律：.bat 注释只能 ASCII（cmd 按 GBK 解析，UTF-8 尾字节可吞 \r 导致解析错乱）；.ps1 必须 UTF-8 带 BOM（PS5.1 按 ANSI 读无 BOM 文件）且不得使用 .NET Core-only API（如 Path.GetRelativePath，PS5.1 无）
+- [坑/gotcha] LVGL 定高容器必须显式 lv_obj_set_style_pad_all(0)：lv_obj 默认主题自带 pad=20，会把 40~56px 的状态栏/底栏撑爆（内容上溢到栏外）。已两次踩（chat/home 状态栏）。
+- [坑/gotcha] 中文字符串改动必须同步 tools/gen_nino_font.py 的 CHARSET 并重跑生成字体：LVGL 内置 CJK 字库缺字不可信（缺听说开玖等），漏字=屏上豆腐块且编译不报错。跑 py tools/gen_nino_font.py --verify 可机械校验全工程字符串全覆盖。
+- [坑/gotcha] esp_sntp_get_sync_status() 的 COMPLETED 是瞬态（下次请求前复位），轮询会漏判成永久未同步。判断是否同步过必须用 esp_sntp_set_time_sync_notification_cb 回调置 sticky 标志（见 core/time_sync.c）。
+- [可复用模式] 网络类资源（WiFi/MQTT/HTTP）三件套范式（参考 bsp_wifi.c）：①三态状态机（DISCONNECTED/CONNECTING/CONNECTED，事件驱动更新+随时可查）②断线 esp_timer 指数退避重连（2s×n 封顶，禁止事件回调里硬重试）③用户手动开关（先关自动重连闸门再断开，防重连风暴）。
+- [坑/gotcha] event_bus_post() 发出的事件没有任何 event_bus_subscribe() 订阅者时会静默蒸发（编译期无感知）。发布前必须 grep 确认订阅者存在；UI 触发状态机一律直调 app_state_machine_send_event（event_bus 留给未来的语音/系统异步事件）。
+- [坑/gotcha] 状态机转移表每新增一个'状态入口'规则，必须同轮审计该状态的所有出口（失败/超时/用户取消路径）。教训：IDLE+SCREEN_TAP→LISTENING 上线时 LISTENING 没有任何可用出口（无语音管线），用户被困死。理想路径之外的路径才是出事的地方。
+- [坑/gotcha] bring-up 阶段的测试代码（开机自检音、帧计数日志、周期打印）不得默认执行进产品路径：要么挂 Kconfig/编译宏开关，要么验证完成后删除。教训：0.5s 1kHz 开机提示音+相机每秒帧计数日志被用户投诉。同理 lvgl-simulator（LVGL 9.5）验证的布局代码移植回设备（LVGL 9.4）时，所用 API 必须先 grep managed_components 头文件确认存在（pad_gap 仅 9.5 有）。
