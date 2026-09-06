@@ -76,3 +76,10 @@ Desktop.ini
 *.workspace # General workspace files, can be from various tools
 *.suo       # Visual Studio Solution User Options
 *.sln.docstates # Visual Studio
+
+# AI API keys —— 真实 key 只存本地，严禁入库（入库存占位符模板）
+docs/key与说明文档.md
+
+# 测试残留日志
+m0_*.log
+m0_*.txt
