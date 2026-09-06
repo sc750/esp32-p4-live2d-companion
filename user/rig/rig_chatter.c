@@ -78,12 +78,30 @@ static const chatter_line_t LINES[] = {
     { "晚安，做个好梦。……梦里也要有我哦。",            B_NIGHT },
 };
 
+/**
+ * 触摸反应语料（rig_chatter_touch 用，与时段无关）
+ * on_head=true 摸头反应，false 戳身体反应
+ */
+static const struct { const char *text; bool on_head; } TOUCH_LINES[] = {
+    { "呀……突然摸头什么的，也、也不是不可以啦。",      true },
+    { "再、再摸的话，就把耳机分你一半哦？",            true },
+    { "哼，摸舒服了没有？……那就再摸一会儿吧。",        true },
+    { "干、干嘛戳我！",                                false },
+    { "别戳了别戳了，好痒！",                          false },
+    { "戳戳戳，我又不是按钮啦。",                      false },
+};
+
+/* 触摸反应冷却：连摸时 2.5s 才接一句，防止刷屏 */
+#define TOUCH_COOLDOWN_MS   (2500)
+
 /** 引擎状态（仅主循环上下文访问，无锁） */
 static struct {
     rig_chatter_cb_t cb;        /* 触发回调 */
     void *ctx;
     uint32_t next_ms;           /* 下一次开腔时刻（esp_timer ms） */
     int last_line;              /* 上一句索引（防连播同一句） */
+    int last_touch;             /* 上一句触摸语料索引（防连播） */
+    uint32_t last_touch_ms;     /* 上次触摸触发时刻（冷却用，0=从未） */
 } s;
 
 /** 当前时段：按墙钟小时划分（24h 制；SNTP 未同步时 time() 靠拢 epoch，落深夜桶） */
@@ -122,14 +140,17 @@ static uint32_t estimate_speak_ms(const char *text)
 esp_err_t rig_chatter_init(void)
 {
     memset(&s, 0, sizeof(s));
-    /* 首次开腔 = 静音期 + 一个随机间隔（开机不抢戏） */
+    /* 首句节奏（R11 收紧）：60s 开机静音 + 30~90s 随机——约 1.5~2.5 分钟
+     * 内见到第一句，不至于让人以为闲聊没在工作 */
     s.next_ms = (uint32_t)(esp_timer_get_time() / 1000)
-                + CHATTER_STARTUP_QUIET_MS + next_gap_ms();
+                + CHATTER_STARTUP_QUIET_MS
+                + 30000 + esp_random() % 60000;
     ESP_RETURN_ON_FALSE(sizeof(LINES) / sizeof(LINES[0]) >= 3,
                         ESP_ERR_INVALID_STATE, TAG, "语料太少");
-    ESP_LOGI(TAG, "闲聊引擎就绪: %u 句语料, 间隔 %d~%d 分钟",
+    ESP_LOGI(TAG, "闲聊引擎就绪: %u 句语料, 间隔 %d~%d 分钟, 触摸反应 %u 句",
              (unsigned)(sizeof(LINES) / sizeof(LINES[0])),
-             CHATTER_MIN_GAP_MS / 60000, CHATTER_MAX_GAP_MS / 60000);
+             CHATTER_MIN_GAP_MS / 60000, CHATTER_MAX_GAP_MS / 60000,
+             (unsigned)(sizeof(TOUCH_LINES) / sizeof(TOUCH_LINES[0])));
     return ESP_OK;
 }
 
@@ -137,6 +158,39 @@ void rig_chatter_set_callback(rig_chatter_cb_t cb, void *ctx)
 {
     s.cb = cb;
     s.ctx = ctx;
+}
+
+void rig_chatter_touch(bool on_head)
+{
+    const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+
+    /* 冷却：连摸 2.5s 内不接新句（表情照常，只是不刷台词） */
+    if (s.cb == NULL || (s.last_touch_ms != 0 &&
+                         now - s.last_touch_ms < TOUCH_COOLDOWN_MS)) {
+        return;
+    }
+    s.last_touch_ms = now;
+
+    /* 从对应部位语料里随机挑一句（与上句不同优先） */
+    const int count = (int)(sizeof(TOUCH_LINES) / sizeof(TOUCH_LINES[0]));
+    int pick = -1;
+    for (int tries = 0; tries < 4; tries++) {
+        int cand = (int)(esp_random() % (unsigned)count);
+        if (TOUCH_LINES[cand].on_head == on_head &&
+            (cand != s.last_touch || tries == 3)) {
+            pick = cand;
+            break;
+        }
+    }
+    if (pick < 0) {
+        return;
+    }
+    s.last_touch = pick;
+
+    /* 触摸反应顶掉了即将到来的 idle 闲聊档期 → 顺延，避免话赶话 */
+    s.next_ms = now + next_gap_ms();
+
+    s.cb(TOUCH_LINES[pick].text, estimate_speak_ms(TOUCH_LINES[pick].text), s.ctx);
 }
 
 void rig_chatter_tick(void)

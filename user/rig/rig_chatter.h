@@ -50,6 +50,16 @@ void rig_chatter_set_callback(rig_chatter_cb_t cb, void *ctx);
  */
 void rig_chatter_tick(void);
 
+/**
+ * @brief 触摸反应（R11）：被摸/被戳时立刻接一句台词
+ *
+ * 由 rig_lvgl 手势识别在单击角色时调用（渲染任务上下文）。
+ * 带 2.5s 冷却防连摸刷屏；触发后顺延下一次 idle 闲聊档期（话不赶话）。
+ *
+ * @param on_head true=摸头台词；false=戳身体台词
+ */
+void rig_chatter_touch(bool on_head);
+
 #ifdef __cplusplus
 }
 #endif

@@ -37,6 +37,7 @@
 #include "rig_mem.h"
 #include "rig_render.h"
 #include "rig_rig.h"
+#include "rig_chatter.h"    /* R11：触摸台词（摸头/戳身体立刻接一句） */
 #include "lvgl_adapter_init.h"
 
 #define TAG "rig_lvgl"
@@ -161,6 +162,8 @@ static void touch_scan(uint32_t now_ms)
                     /* 单击按区域分发：摸头一下=害羞，戳身体=惊讶 */
                     rig_rig_trigger(s_g.on_head ? RIG_EXPR_SHY : RIG_EXPR_SURPRISE);
                 }
+                /* R11：被摸/被戳立刻接一句台词（chatter 内部 2.5s 冷却防刷屏） */
+                rig_chatter_touch(s_g.on_head);
             }
         }
         return;

@@ -193,14 +193,12 @@ static rig_mouth_t mouth_seq_at(uint32_t t_ms)
     return seq[(t_ms / 150) % 4];
 }
 
-/** 口型目标：外部 TTS 驱动 > 按需说话（闲聊） > idle 演示串 > 闭嘴 */
+/** 待机口型目标：外部 TTS 驱动优先，其次 idle 演示串（说话串已上移到
+ * tick 的嘴调度里与表情叠加，本函数只管"待机且没在按需说话"的场景） */
 static rig_mouth_t mouth_target(uint32_t now)
 {
     if (s.mouth_ext_active) {
         return s.mouth_ext;
-    }
-    if (s.speak_until_ms > now) {
-        return mouth_seq_at(now - s.speak_start_ms);
     }
     uint32_t t = now - s.burst_start_ms;
     if (t < MOUTH_BURST_MS) {
@@ -307,36 +305,38 @@ void rig_rig_tick(uint32_t now, rig_pose_t *out)
         }
     }
 
-    /* ---- 6. 嘴调度 ----
-     * 表情期间：表情指定哪张嘴就亮哪张（大笑张嘴/嘟嘴）。
-     * 待机期间：外部 TTS 驱动优先，否则 idle 说话串每隔几秒演一串。 */
-    if (expr_on) {
-        int mouth_idx = -1;
-        if (ed->mouth_layer) {
-            if (strcmp(ed->mouth_layer, "mouth_open") == 0) {
-                mouth_idx = s.idx_mouth_open;
-            } else if (strcmp(ed->mouth_layer, "mouth_half") == 0) {
-                mouth_idx = s.idx_mouth_half;
-            } else if (strcmp(ed->mouth_layer, "mouth_pout") == 0) {
-                mouth_idx = s.idx_mouth_pout;
-            }
+    /* ---- 6. 嘴调度（R11 重构：说话与表情可叠加） ----
+     * 优先级：表情自带嘴型（大笑张嘴/嘟嘴）> 按需说话（rig_rig_speak，
+     * 触摸台词/闲聊）> idle 演示串（仅待机）。
+     * "说话与表情叠加"是有意为之——害羞着把话说完更可爱。 */
+    int mouth_idx = -1;
+    if (expr_on && ed->mouth_layer) {
+        if (strcmp(ed->mouth_layer, "mouth_open") == 0) {
+            mouth_idx = s.idx_mouth_open;
+        } else if (strcmp(ed->mouth_layer, "mouth_half") == 0) {
+            mouth_idx = s.idx_mouth_half;
+        } else if (strcmp(ed->mouth_layer, "mouth_pout") == 0) {
+            mouth_idx = s.idx_mouth_pout;
         }
-        if (mouth_idx >= 0) {
-            out->visible[mouth_idx] = 1;
+    } else if (s.speak_until_ms > now) {
+        /* 按需说话：150ms 步进口型串（外部 TTS 驱动时让位） */
+        if (!s.mouth_ext_active) {
+            rig_mouth_t mt = mouth_seq_at(now - s.speak_start_ms);
+            mouth_idx = (mt == RIG_MOUTH_OPEN) ? s.idx_mouth_open :
+                        (mt == RIG_MOUTH_HALF) ? s.idx_mouth_half : -1;
         }
-    } else {
+    } else if (!expr_on) {
+        /* 待机 idle：外部 TTS 驱动优先，否则演示串每隔几秒演一串 */
         rig_mouth_t mt = mouth_target(now);
-        /* 到点开一串新的 idle 说话串（外部驱动时不抢戏） */
         if (now >= s.next_burst_ms && !s.mouth_ext_active) {
             s.burst_start_ms = now;
             s.next_burst_ms = now + 4000 + (esp_random() % 4000);
         }
-        if (s.idx_mouth_open >= 0) {
-            out->visible[s.idx_mouth_open] = (mt == RIG_MOUTH_OPEN);
-        }
-        if (s.idx_mouth_half >= 0) {
-            out->visible[s.idx_mouth_half] = (mt == RIG_MOUTH_HALF);
-        }
+        mouth_idx = (mt == RIG_MOUTH_OPEN) ? s.idx_mouth_open :
+                    (mt == RIG_MOUTH_HALF) ? s.idx_mouth_half : -1;
+    }
+    if (mouth_idx >= 0) {
+        out->visible[mouth_idx] = 1;
     }
 
     /* ---- 7. 腮红 ----

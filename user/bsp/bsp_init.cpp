@@ -90,17 +90,17 @@ extern "C" esp_err_t bsp_init_all(void)
     ESP_RETURN_ON_ERROR(bsp_spiffs_mount(), TAG, "SPIFFS mount failed");
     ESP_LOGI(TAG, "SPIFFS 挂载成功");
 
-    /* 3. 音频（ES8311 录放 + PA），自检播放短提示音并检查麦克风电平 */
+    /* 3. 音频（ES8311 录放 + PA）。R11：开机不再自检播放提示音（吵），
+     * 需要 时可手动调 bsp_audio_self_test()（诊断用 API 保留） */
     ESP_RETURN_ON_ERROR(bsp_audio_open(), TAG, "audio init failed");
-    bsp_audio_self_test();
 
     /* 4. 显示屏 + LVGL */
     ESP_RETURN_ON_ERROR(init_display(), TAG, "display init failed");
 
-    /* 5. 摄像头（SC2336，无模组时不阻塞启动）；启动取流验证出图 */
-    if (bsp_camera_init() == ESP_OK) {
-        bsp_camera_start_stream(NULL); /* NULL 回调 = 每 30 帧打日志 */
-    } else {
+    /* 5. 摄像头（SC2336，无模组时不阻塞启动）。
+     * R11：开机不再自动取流（帧计数日志是测试残留，且 Phase 6 前无人消费画面）；
+     * 需要时调 bsp_camera_start_stream() 手动验证 */
+    if (bsp_camera_init() != ESP_OK) {
         ESP_LOGW(TAG, "摄像头不可用（未安装模组或探测失败），跳过");
     }
 
