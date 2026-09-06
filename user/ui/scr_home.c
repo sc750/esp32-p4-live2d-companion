@@ -44,22 +44,39 @@ static const char *TAG = "scr_home";
 typedef struct {
     lv_obj_t *container;        /* 页面容器：包含所有子元素 */
     lv_obj_t *status_bar;       /* 顶部状态栏 */
-    lv_obj_t *wifi_icon;        /* Wi-Fi 状态图标（文字替代） */
+    lv_obj_t *wifi_switch;      /* Wi-Fi 开关滑块（R12：拨右=开/绿） */
+    lv_obj_t *wifi_label;       /* Wi-Fi 状态文案（黄=未连/绿=连接中/已连） */
     lv_obj_t *time_label;       /* 时间显示标签 */
-    lv_obj_t *live2d_area;      /* Live2D 角色区域（Phase 2 实现） */
+    lv_obj_t *live2d_area;      /* Live2D 角色区域 */
     lv_obj_t *subtitle_bar;     /* 底部字幕栏 */
     lv_obj_t *subtitle_label;   /* 字幕文本标签 */
-    lv_obj_t *tap_hint;         /* 点击提示文字 */
 } home_ui_t;
 
 /* Home 页面的 UI 对象实例（静态全局，本模块独占） */
 static home_ui_t s_home_ui;
 
+/* Wi-Fi 开关切捔回调（编排层经 set_wifi_toggle_cb 注入，UI 不碰 BSP） */
+static void (*s_wifi_toggle_cb)(bool turn_on, void *ctx) = NULL;
+static void *s_wifi_toggle_ctx = NULL;
+
 /**
- * @brief 创建顶部状态栏
+ * @brief Wi-Fi 开关拨动回调（用户操作触发；程序设 CHECKED 不触发事件）
+ */
+static void on_wifi_switch_changed(lv_event_t *e)
+{
+    lv_obj_t *sw = lv_event_get_target(e);
+    bool turn_on = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    ESP_LOGI(TAG, "Wi-Fi 开关拨动: %s", turn_on ? "ON" : "OFF");
+    if (s_wifi_toggle_cb) {
+        s_wifi_toggle_cb(turn_on, s_wifi_toggle_ctx);
+    }
+}
+
+/**
+ * @brief 创建顶部状态栏（R12：Wi-Fi 滑块开关 + 三态文案 | 时间）
  *
- * 布局：左右两端对齐（Wi-Fi 在左，时间在右）。
- * 背景半透明灰色，文字白色。
+ * 布局：SPACE_BETWEEN —— 左侧[开关+状态文案]组合，右侧时间。
+ * 必须显式 pad_all(0)：lv_obj 默认主题 pad=20 会把 40px 高的栏撑爆。
  */
 static void create_status_bar(lv_obj_t *parent)
 {
@@ -70,27 +87,48 @@ static void create_status_bar(lv_obj_t *parent)
     lv_obj_set_flex_flow(s_home_ui.status_bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(s_home_ui.status_bar, LV_FLEX_ALIGN_SPACE_BETWEEN,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    /* 半透明背景 */
+    /* R8：lv_obj 默认 pad=20 会撑爆 40px 高的栏，归零后只留左右内边距 */
+    lv_obj_set_style_pad_all(s_home_ui.status_bar, 0, 0);
+    lv_obj_set_style_pad_hor(s_home_ui.status_bar, 16, 0);
     const theme_colors_t *colors = theme_manager_get_colors();
     lv_obj_set_style_bg_color(s_home_ui.status_bar, colors->status_bar_bg, 0);
-    /* R8：lv_obj 默认主题 pad=20 会把 40px 高的栏撑爆（文字上溢），
-     * 必须显式 pad_all(0) 后只留左右内边距 */
-    lv_obj_set_style_pad_all(s_home_ui.status_bar, 0, 0);
-    lv_obj_set_style_pad_hor(s_home_ui.status_bar, 16, 0);  /* 左右内边距 16px */
     lv_obj_set_style_bg_opa(s_home_ui.status_bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(s_home_ui.status_bar, 0, 0);  /* 无边框 */
-    lv_obj_set_style_radius(s_home_ui.status_bar, 0, 0);  /* 无圆角 */
+    lv_obj_set_style_border_width(s_home_ui.status_bar, 0, 0);
+    lv_obj_set_style_radius(s_home_ui.status_bar, 0, 0);
 
-    /* Wi-Fi 图标（中文状态文字，nino_cjk_16 字体含 ASCII 可混排） */
-    s_home_ui.wifi_icon = lv_label_create(s_home_ui.status_bar);
-    lv_label_set_text(s_home_ui.wifi_icon, "WiFi 未连接");
-    lv_obj_set_style_text_color(s_home_ui.wifi_icon, colors->text_color, 0);
-    lv_obj_set_style_text_font(s_home_ui.wifi_icon, nino_font_cjk16(), 0);
+    /* ---- 左组：Wi-Fi 滑块 + 状态文案（透明容器 8px 间距） ---- */
+    lv_obj_t *wifi_group = lv_obj_create(s_home_ui.status_bar);
+    lv_obj_set_size(wifi_group, 220, STATUS_BAR_H);
+    lv_obj_set_style_bg_opa(wifi_group, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(wifi_group, 0, 0);
+    lv_obj_set_style_pad_all(wifi_group, 0, 0);
+    lv_obj_set_flex_flow(wifi_group, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(wifi_group, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(wifi_group, 10, 0);
+    lv_obj_clear_flag(wifi_group, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* 时间标签（默认显示 00:00） */
+    /* 滑块开关：椭圆框，拨右=开。选中态指示器绿、未选灰色 */
+    s_home_ui.wifi_switch = lv_switch_create(wifi_group);
+    lv_obj_set_size(s_home_ui.wifi_switch, 52, 26);
+    lv_obj_set_style_bg_color(s_home_ui.wifi_switch, lv_color_hex(0x27AE60),
+                              LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(s_home_ui.wifi_switch, lv_color_hex(0xB5B5B5),
+                              LV_PART_INDICATOR);
+    lv_obj_add_event_cb(s_home_ui.wifi_switch, on_wifi_switch_changed,
+                        LV_EVENT_VALUE_CHANGED, NULL);
+
+    /* 三态文案：未连接=黄 / 正在连接中=绿 / WiFi 已连接=绿 */
+    s_home_ui.wifi_label = lv_label_create(wifi_group);
+    lv_label_set_text(s_home_ui.wifi_label, "WiFi 未连接");
+    lv_obj_set_style_text_color(s_home_ui.wifi_label, lv_color_hex(0xF1C40F), 0);
+    lv_obj_set_style_text_font(s_home_ui.wifi_label, nino_font_cjk16(), 0);
+
+    /* ---- 右侧：时间 ---- */
     s_home_ui.time_label = lv_label_create(s_home_ui.status_bar);
-    lv_label_set_text(s_home_ui.time_label, "00:00");
+    lv_label_set_text(s_home_ui.time_label, "--:--");
     lv_obj_set_style_text_color(s_home_ui.time_label, colors->text_color, 0);
+    lv_obj_set_style_text_font(s_home_ui.time_label, nino_font_cjk16(), 0);
 }
 
 /**
@@ -202,30 +240,51 @@ lv_obj_t *scr_home_create(lv_obj_t *parent)
  *   - 已连接：显示蓝色 Wi-Fi 图标
  *   - 未连接：显示白色 Wi-Fi 图标 + "Disconnected"
  */
-void scr_home_update_status_bar(bool wifi_connected, const char *time_str)
+void scr_home_set_wifi_state(scr_wifi_state_t state)
 {
-    if (s_home_ui.wifi_icon == NULL) {
-        return;  /* 状态栏还未创建 */
+    if (s_home_ui.wifi_label == NULL) {
+        return;
     }
-
-    const theme_colors_t *colors = theme_manager_get_colors();
-
-    if (wifi_connected) {
-        /* 已连接：主题蓝色高亮 */
-        lv_label_set_text(s_home_ui.wifi_icon, "WiFi 已连接");
-        lv_obj_set_style_text_color(s_home_ui.wifi_icon,
-                                    colors->primary_color, 0);
-    } else {
-        /* 未连接：默认文字色 */
-        lv_label_set_text(s_home_ui.wifi_icon, "WiFi 未连接");
-        lv_obj_set_style_text_color(s_home_ui.wifi_icon,
-                                    colors->text_color, 0);
+    const char *text;
+    lv_color_t color;
+    switch (state) {
+        case SCR_WIFI_CONNECTING:
+            text = "正在连接中";
+            color = lv_color_hex(0x27AE60);     /* 绿 */
+            break;
+        case SCR_WIFI_CONNECTED:
+            text = "WiFi 已连接";
+            color = lv_color_hex(0x27AE60);     /* 绿 */
+            break;
+        case SCR_WIFI_DISCONNECTED:
+        default:
+            text = "WiFi 未连接";
+            color = lv_color_hex(0xF1C40F);     /* 黄 */
+            break;
     }
+    /* 滑块随状态联动：连接中/已连=拨右侧绿色；未连=左侧灰 */
+    if (s_home_ui.wifi_switch != NULL) {
+        if (state == SCR_WIFI_DISCONNECTED) {
+            lv_obj_remove_state(s_home_ui.wifi_switch, LV_STATE_CHECKED);
+        } else {
+            lv_obj_add_state(s_home_ui.wifi_switch, LV_STATE_CHECKED);
+        }
+    }
+    lv_label_set_text(s_home_ui.wifi_label, text);
+    lv_obj_set_style_text_color(s_home_ui.wifi_label, color, 0);
+}
 
-    /* 更新时间显示 */
-    if (time_str != NULL && s_home_ui.time_label != NULL) {
+void scr_home_set_time(const char *time_str)
+{
+    if (s_home_ui.time_label != NULL && time_str != NULL) {
         lv_label_set_text(s_home_ui.time_label, time_str);
     }
+}
+
+void scr_home_set_wifi_toggle_cb(void (*cb)(bool turn_on, void *ctx), void *ctx)
+{
+    s_wifi_toggle_cb = cb;
+    s_wifi_toggle_ctx = ctx;
 }
 
 void scr_home_set_subtitle(const char *text)

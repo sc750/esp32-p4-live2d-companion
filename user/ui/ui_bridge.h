@@ -27,8 +27,11 @@ extern "C" {
 /** 更新主页字幕（任意任务安全；文本须为常量或调用方保证生命周期） */
 void ui_bridge_set_subtitle(const char *text);
 
-/** 更新状态栏（Wi-Fi 状态 + 时间，任意任务安全） */
-void ui_bridge_update_status_bar(bool wifi_connected, const char *time_str);
+/** 更新 Wi-Fi 状态显示（R12：滑块+三态文案；state 取 scr_wifi_state_t 值） */
+void ui_bridge_set_wifi_state(int state);
+
+/** 更新状态栏时间（"HH:MM"） */
+void ui_bridge_set_time(const char *time_str);
 
 #ifdef __cplusplus
 }

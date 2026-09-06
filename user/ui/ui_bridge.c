@@ -31,9 +31,19 @@ void ui_bridge_set_subtitle(const char *text)
     esp_lv_adapter_unlock();
 }
 
-void ui_bridge_update_status_bar(bool wifi_connected, const char *time_str)
+void ui_bridge_set_wifi_state(int state)
 {
     esp_lv_adapter_lock(-1);
-    scr_home_update_status_bar(wifi_connected, time_str);
+    scr_home_set_wifi_state((scr_wifi_state_t)state);
+    esp_lv_adapter_unlock();
+}
+
+void ui_bridge_set_time(const char *time_str)
+{
+    if (time_str == NULL) {
+        return;
+    }
+    esp_lv_adapter_lock(-1);
+    scr_home_set_time(time_str);
     esp_lv_adapter_unlock();
 }

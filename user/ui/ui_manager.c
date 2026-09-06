@@ -161,12 +161,6 @@ ui_page_id_t ui_manager_get_current_page(void)
     return s_current_page;
 }
 
-void ui_manager_update_status_bar(bool wifi_connected, const char *time_str)
-{
-    /* 转发给 Home 页面的状态栏更新函数 */
-    scr_home_update_status_bar(wifi_connected, time_str);
-}
-
 void ui_manager_set_subtitle(const char *text)
 {
     /* 字幕常驻主页（独立 Chat 页已拆除） */

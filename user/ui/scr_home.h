@@ -28,9 +28,19 @@ extern "C" {
 #endif
 
 /**
+ * Wi-Fi 状态（UI 视角三态，R12 状态栏开关按钮用）
+ * 与 bsp_wifi_state_t 的映射由编排层（main_app）完成，UI 不直接依赖 BSP。
+ */
+typedef enum {
+    SCR_WIFI_DISCONNECTED = 0,  /* 未连接：文案黄色 */
+    SCR_WIFI_CONNECTING,        /* 正在连接中：文案绿色 */
+    SCR_WIFI_CONNECTED,         /* WiFi 已连接：文案绿色 */
+} scr_wifi_state_t;
+
+/**
  * @brief 创建 Home Screen
  *
- * 创建所有 UI 元素（状态栏、Live2D 占位区、字幕栏），
+ * 创建所有 UI 元素（状态栏、Live2D 角色区、字幕栏），
  * 但页面默认是隐藏的，需要调用 ui_manager_navigate() 才会显示。
  *
  * @param[in] parent  父对象（通常是 LVGL 主屏幕）
@@ -45,14 +55,29 @@ lv_obj_t *scr_home_create(lv_obj_t *parent);
 lv_obj_t *scr_home_get_live2d_area(void);
 
 /**
- * @brief 更新状态栏
+ * @brief 更新 Wi-Fi 状态显示（R12：滑块开关 + 三态文案）
  *
- * 更新顶部状态栏的 Wi-Fi 图标和时间显示。
+ * 滑块位置随状态同步：CONNECTING/CONNECTED 在右侧，DISCONNECTED 在左。
  *
- * @param[in] wifi_connected  true=显示已连接，false=显示未连接
- * @param[in] time_str        时间字符串（如 "14:30"），NULL 则不更新
+ * @param[in] state  Wi-Fi 状态
  */
-void scr_home_update_status_bar(bool wifi_connected, const char *time_str);
+void scr_home_set_wifi_state(scr_wifi_state_t state);
+
+/**
+ * @brief 更新状态栏时间显示（"HH:MM"；未同步时由调用方传 "--:--"）
+ * @param[in] time_str  时间字符串，NULL 则不更新
+ */
+void scr_home_set_time(const char *time_str);
+
+/**
+ * @brief 注册 Wi-Fi 开关切捔回调（编排层注入，UI 不直接碰 BSP）
+ *
+ * 用户拨动状态栏滑块时调用：on=true 请求连接，false 请求断开。
+ *
+ * @param[in] cb   回调（NULL=注销）
+ * @param[in] ctx  回调上下文
+ */
+void scr_home_set_wifi_toggle_cb(void (*cb)(bool turn_on, void *ctx), void *ctx);
 
 /**
  * @brief 更新底部字幕

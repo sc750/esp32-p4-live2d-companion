@@ -47,6 +47,22 @@ static void on_chatter_line(const char *text, uint32_t speak_ms, void *ctx)
     rig_rig_speak(speak_ms);
 }
 
+/**
+ * @brief Wi-Fi 开关切捔回调（状态栏滑块 → BSP 连接/断开）
+ *
+ * UI 层不直接碰 BSP：scr_home 只拨开关，这里做真正的连接/断开动作。
+ * ON = 按 Kconfig 配置连接（并打开自动重连闸门）；OFF = 断开并停用重连。
+ */
+static void on_wifi_toggle(bool turn_on, void *ctx)
+{
+    (void)ctx;
+    if (turn_on) {
+        bsp_wifi_connect_from_config();
+    } else {
+        bsp_wifi_disconnect();
+    }
+}
+
 void user_app_run(void)
 {
     ESP_LOGI(TAG, "==========================================");
@@ -67,6 +83,11 @@ void user_app_run(void)
 
     /* 4. UI 初始化 */
     ESP_ERROR_CHECK(ui_manager_init());
+
+    /* 4b. Wi-Fi 开关接线（R12）：状态栏滑块 → BSP 连接/断开，
+     * 并把 BSP 当前状态（开机即连）同步到 UI，滑块位置一步到位 */
+    scr_home_set_wifi_toggle_cb(on_wifi_toggle, NULL);
+    ui_bridge_set_wifi_state((int)bsp_wifi_get_state());
 
     /* 5. 角色加载 + 动画渲染（M03 R5b：入住 live2d_area + 触摸表情） */
     static rig_model_t s_model;
@@ -89,26 +110,29 @@ void user_app_run(void)
 
     ESP_LOGI(TAG, "系统就绪！进入主循环...");
 
-    /* 主循环：闲聊节拍 + 状态栏时钟 + 周期内存报告 */
+    /* 主循环：闲聊节拍 + Wi-Fi 状态/时钟同步 + 周期内存报告 */
     char last_time[8] = "";
-    bool last_wifi = false;
+    int last_wifi_state = -1;           /* -1 = 首轮强制刷一次 */
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
 
         /* 闲聊轮播节拍（内部自带 3~8 分钟随机间隔，1s 粒度足够） */
         rig_chatter_tick();
 
-        /* SNTP：联网即启动（幂等）；分钟变化或 Wi-Fi 翻转才刷状态栏，
+        /* SNTP：联网即启动（幂等）；Wi-Fi 状态或分钟变化才刷状态栏，
          * 避免 1Hz 重绘 */
-        const bool wifi = bsp_wifi_is_connected();
-        if (wifi) {
+        const int wifi_state = (int)bsp_wifi_get_state();
+        if (wifi_state == (int)BSP_WIFI_CONNECTED) {
             time_sync_start();
         }
+        if (wifi_state != last_wifi_state) {
+            ui_bridge_set_wifi_state(wifi_state);
+            last_wifi_state = wifi_state;
+        }
         char now_buf[8] = "--:--";
-        time_sync_get_hhmm(now_buf, sizeof(now_buf));
-        if (wifi != last_wifi || strcmp(now_buf, last_time) != 0) {
-            ui_bridge_update_status_bar(wifi, now_buf);
-            last_wifi = wifi;
+        if (time_sync_get_hhmm(now_buf, sizeof(now_buf)) &&
+            strcmp(now_buf, last_time) != 0) {
+            ui_bridge_set_time(now_buf);
             memcpy(last_time, now_buf, sizeof(now_buf));
         }
 

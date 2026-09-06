@@ -42,6 +42,26 @@ esp_err_t bsp_wifi_connect(const char *ssid, const char *password);
  */
 esp_err_t bsp_wifi_connect_from_config(void);
 
+/**
+ * Wi-Fi 连接状态（R12 状态机化：状态栏开关按钮的显示依据）
+ */
+typedef enum {
+    BSP_WIFI_DISCONNECTED = 0,  /* 未连接（未启用或用户关闭） */
+    BSP_WIFI_CONNECTING,        /* 连接中（含断线自动重试期间） */
+    BSP_WIFI_CONNECTED,         /* 已连接（已拿到 IP） */
+} bsp_wifi_state_t;
+
+/** 当前连接状态（事件驱动更新，任意任务随时可查） */
+bsp_wifi_state_t bsp_wifi_get_state(void);
+
+/**
+ * @brief 断开并停用自动重连（状态栏开关 OFF）
+ *
+ * 内部先关 auto-connect 闸门再断开——断开事件不再触发重连，
+ * 直到下次 bsp_wifi_connect*() 重新打开闸门。
+ */
+esp_err_t bsp_wifi_disconnect(void);
+
 /** @brief 是否已获取 IP */
 bool bsp_wifi_is_connected(void);
 

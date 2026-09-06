@@ -72,16 +72,6 @@ void ui_manager_navigate(ui_page_id_t page_id);
 ui_page_id_t ui_manager_get_current_page(void);
 
 /**
- * @brief 更新状态栏信息
- *
- * 更新顶部状态栏的 Wi-Fi 图标和时间显示。
- *
- * @param[in] wifi_connected  Wi-Fi 是否已连接
- * @param[in] time_str        时间字符串（如 "14:30"）
- */
-void ui_manager_update_status_bar(bool wifi_connected, const char *time_str);
-
-/**
  * @brief 显示字幕文本
  *
  * 在 Home 页的底部字幕区显示文本（独立 Chat 页已拆除，字幕常驻主页）。
