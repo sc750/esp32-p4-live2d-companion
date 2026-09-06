@@ -30,8 +30,8 @@ void ui_bridge_set_subtitle(const char *text);
 /** 更新 Wi-Fi 状态显示（R12：滑块+三态文案；state 取 scr_wifi_state_t 值） */
 void ui_bridge_set_wifi_state(int state);
 
-/** 更新状态栏时间（"HH:MM"） */
-void ui_bridge_set_time(const char *time_str);
+/** 更新状态栏时间（"HH:MM"；synced=false 断线漂移中 → 文字变灰） */
+void ui_bridge_set_time(const char *time_str, bool synced);
 
 #ifdef __cplusplus
 }

@@ -38,12 +38,12 @@ void ui_bridge_set_wifi_state(int state)
     esp_lv_adapter_unlock();
 }
 
-void ui_bridge_set_time(const char *time_str)
+void ui_bridge_set_time(const char *time_str, bool synced)
 {
     if (time_str == NULL) {
         return;
     }
     esp_lv_adapter_lock(-1);
-    scr_home_set_time(time_str);
+    scr_home_set_time(time_str, synced);
     esp_lv_adapter_unlock();
 }

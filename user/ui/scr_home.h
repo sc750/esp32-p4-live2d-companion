@@ -21,6 +21,7 @@
 #ifndef SCR_HOME_H
 #define SCR_HOME_H
 
+#include <stdbool.h>
 #include "lvgl.h"
 
 #ifdef __cplusplus
@@ -65,9 +66,14 @@ void scr_home_set_wifi_state(scr_wifi_state_t state);
 
 /**
  * @brief 更新状态栏时间显示（"HH:MM"；未同步时由调用方传 "--:--"）
+ *
+ * R12：synced=false（NTP 断流，晶振续走的"非权威时间"）时文字变灰，
+ * 提示仅供参考；重连校时成功后恢复正常色。
+ *
  * @param[in] time_str  时间字符串，NULL 则不更新
+ * @param[in] synced    true=NTP 已校准；false=断线漂移中
  */
-void scr_home_set_time(const char *time_str);
+void scr_home_set_time(const char *time_str, bool synced);
 
 /**
  * @brief 注册 Wi-Fi 开关切捔回调（编排层注入，UI 不直接碰 BSP）

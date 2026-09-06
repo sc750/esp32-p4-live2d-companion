@@ -274,11 +274,16 @@ void scr_home_set_wifi_state(scr_wifi_state_t state)
     lv_obj_set_style_text_color(s_home_ui.wifi_label, color, 0);
 }
 
-void scr_home_set_time(const char *time_str)
+void scr_home_set_time(const char *time_str, bool synced)
 {
-    if (s_home_ui.time_label != NULL && time_str != NULL) {
-        lv_label_set_text(s_home_ui.time_label, time_str);
+    if (s_home_ui.time_label == NULL || time_str == NULL) {
+        return;
     }
+    lv_label_set_text(s_home_ui.time_label, time_str);
+    /* R12：断线期间晶振续走的时间为"非权威"——灰色提示，重连校准后恢复 */
+    lv_obj_set_style_text_color(s_home_ui.time_label,
+                                synced ? theme_manager_get_colors()->text_color
+                                       : lv_color_hex(0x999999), 0);
 }
 
 void scr_home_set_wifi_toggle_cb(void (*cb)(bool turn_on, void *ctx), void *ctx)

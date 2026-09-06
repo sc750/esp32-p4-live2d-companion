@@ -88,6 +88,7 @@ void user_app_run(void)
      * 并把 BSP 当前状态（开机即连）同步到 UI，滑块位置一步到位 */
     scr_home_set_wifi_toggle_cb(on_wifi_toggle, NULL);
     ui_bridge_set_wifi_state((int)bsp_wifi_get_state());
+    ui_bridge_set_time("--:--", false);     /* 开机未校时：灰色占位 */
 
     /* 5. 角色加载 + 动画渲染（M03 R5b：入住 live2d_area + 触摸表情） */
     static rig_model_t s_model;
@@ -113,6 +114,7 @@ void user_app_run(void)
     /* 主循环：闲聊节拍 + Wi-Fi 状态/时钟同步 + 周期内存报告 */
     char last_time[8] = "";
     int last_wifi_state = -1;           /* -1 = 首轮强制刷一次 */
+    bool last_time_synced = false;      /* 上轮 NTP 同步态（灰/黑切换用） */
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
 
@@ -131,10 +133,12 @@ void user_app_run(void)
         }
         char now_buf[8] = "--:--";
         if (time_sync_get_hhmm(now_buf, sizeof(now_buf)) &&
-            strcmp(now_buf, last_time) != 0) {
-            ui_bridge_set_time(now_buf);
+            (strcmp(now_buf, last_time) != 0 || !last_time_synced)) {
+            /* 时间变了 或 刚从"未同步"转正——变灰/恢复色也要刷一次 */
+            ui_bridge_set_time(now_buf, time_sync_is_synced());
             memcpy(last_time, now_buf, sizeof(now_buf));
         }
+        last_time_synced = time_sync_is_synced();
 
         /* 每 60 秒打印内存报告 */
         static int tick_count = 0;
