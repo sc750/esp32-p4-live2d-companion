@@ -16,18 +16,16 @@
 
 ```
 App Root
-├── Home Screen (STATE_IDLE)
-│   ├── Live2D 角色 (由 PainterEngine 渲染, overlay)
-│   ├── 顶部状态栏 (Wi-Fi图标, 电量, 时间)
-│   ├── 底部对话字幕区 (半透明)
-│   └── 触摸交互区 (点击角色触发对话)
+├── Home Screen (STATE_IDLE / 全应用唯一常驻页面, R9 修订)
+│   ├── Live2D 角色 (rig 引擎渲染, 唯一交互目标: 五种触摸表情)
+│   ├── 顶部状态栏 (Wi-Fi 开关滑块+三态文案, 时间[断线变灰])
+│   ├── 底部对话字幕区 (闲聊轮播 / 对话字幕 / 状态层挂载点)
+│   │   └── 对话状态层 (STATE_LISTENING/THINKING/SPEAKING 时叠加:
+│   │        字幕升高 + 波形条 + 状态点; Phase 3 语音链路就绪时实现)
+│   └── 触摸交互 (摸角色=表情+台词; 点空白=无动作, Phase 3 起=开始说话)
 │
-├── Chat Screen (STATE_LISTENING / STATE_THINKING / STATE_SPEAKING)
-│   ├── Live2D 角色 (表情跟随状态)
-│   ├── 对话字幕 (中文, 流式显示)
-│   ├── 日文字幕 (可选开关)
-│   ├── 语音波形指示器
-│   └── 停止按钮
+├── [已拆除] Chat Screen (原独立对话页, 2026-09-06 brainstorm 决策:
+│   无语音链路时独立对话页=假监听死胡同, 对话改为 Home 的状态层)
 │
 ├── Music Screen (STATE_MUSIC)
 │   ├── Live2D 角色 (听音乐表情)
