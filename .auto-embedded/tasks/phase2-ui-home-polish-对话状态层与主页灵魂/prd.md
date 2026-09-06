@@ -9,29 +9,29 @@
 ## 需求 / 验收标准
 
 ### D1 — 对话 = 主页的状态层（架构级决策，修订 PRD 02-lvgl-ui.md）
-- [ ] 取消独立 Chat 页面：scr_chat.c/.h 删除（git 历史留档）
-- [ ] ui_manager 页面表只留 HOME；LISTENING/THINKING/SPEAKING 状态的 UI 表现
+- [x] 取消独立 Chat 页面：scr_chat.c/.h 删除（git 历史留档）
+- [x] ui_manager 页面表只留 HOME；LISTENING/THINKING/SPEAKING 状态的 UI 表现
       改为"主页状态层"规格：字幕区升高 + 波形条出现 + 状态点（蓝听/橙思/绿说）
       ——本任务只落规格文档，状态层组件 Phase 3 语音链路就绪时实现
-- [ ] 状态机保留 LISTENING/THINKING/SPEAKING 转移规则（Phase 3 用），
+- [x] 状态机保留 LISTENING/THINKING/SPEAKING 转移规则（Phase 3 用），
       但 Phase 2 无任何入口能进入这些状态（无假监听）
-- [ ] PRD 02-lvgl-ui.md 更新页面层级图：Chat Screen → Home Screen 的状态层
+- [x] PRD 02-lvgl-ui.md 更新页面层级图：Chat Screen → Home Screen 的状态层
 
 ### D2 — 空白区域留白
-- [ ] 点角色外空白：无任何反应（角色是全屏唯一可交互目标）
-- [ ] scr_home 的 on_tap_clicked / EVENT_SCREEN_TAP 触发链移除
+- [x] 点角色外空白：无任何反应（角色是全屏唯一可交互目标）
+- [x] scr_home 的 on_tap_clicked / EVENT_SCREEN_TAP 触发链移除
       （角色上的触摸仍走 rig_lvgl 手势→表情，互不影响）
 
 ### D3 — 三玖闲聊轮播（主页灵魂）
-- [ ] 本地语料库 ≥15 句三玖风格短语（我起草，用户可改，带分时段 bucket：
+- [x] 本地语料库 ≥15 句三玖风格短语（我起草，用户可改，带分时段 bucket：
       早晨/白天/晚间/深夜）
-- [ ] 随机间隔 3~8 分钟触发一句：字幕区显示 + 口型动画同步 + 小表情随机加成
-- [ ] 触摸表情系统不受影响（闲聊触发中摸头会打断/覆盖，以表情优先）
+- [x] 随机间隔 3~8 分钟触发一句：字幕区显示 + 口型动画同步 + 小表情随机加成
+- [x] 触摸表情系统不受影响（闲聊触发中摸头会打断/覆盖，以表情优先）
 
 ### D4 — 真时钟（主页骨架）
-- [ ] SNTP 校时（WiFi 就绪后自动，时区 UTC+8）
-- [ ] 状态栏时间显示真实 HH:MM（替换假 00:00）
-- [ ] 日期显示：状态栏放不下则并入闲聊字幕或状态栏紧凑格式（PLAN 定）
+- [x] SNTP 校时（WiFi 就绪后自动，时区 UTC+8）
+- [x] 状态栏时间显示真实 HH:MM（替换假 00:00）
+- [x] 日期显示：状态栏放不下则并入闲聊字幕或状态栏紧凑格式（PLAN 定）
 
 ## 验收标准（整机）
 - V1 编译零错烧录通过
