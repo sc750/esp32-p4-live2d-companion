@@ -31,6 +31,13 @@ void ui_bridge_set_subtitle(const char *text)
     esp_lv_adapter_unlock();
 }
 
+void ui_bridge_set_dialog_state(int state)
+{
+    esp_lv_adapter_lock(-1);
+    scr_home_set_dialog_state((scr_dialog_state_t)state);
+    esp_lv_adapter_unlock();
+}
+
 void ui_bridge_set_wifi_state(int state)
 {
     esp_lv_adapter_lock(-1);

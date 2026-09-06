@@ -21,6 +21,9 @@
 #include "ui_manager.h"
 #include "ui_bridge.h"
 #include "time_sync.h"
+#include "dialog_manager.h"
+#include "chat_console.h"
+#include "esp_timer.h"
 #include "rig_model.h"
 #include "rig_lvgl.h"
 #include "rig_rig.h"
@@ -63,6 +66,58 @@ static void on_wifi_toggle(bool turn_on, void *ctx)
     }
 }
 
+/* ---- M0：串口对话链路（LLM 流式 → 字幕） ---- */
+static char s_stream_buf[4096];         /* 流式回复累积（含 '\0'） */
+static size_t s_stream_len = 0;
+static int64_t s_last_flush_us = 0;
+
+/** LLM token：攒进流式缓冲，≥100ms 才刷一次字幕（LVGL 重绘节流） */
+static void on_llm_token(const char *text, void *ctx)
+{
+    (void)ctx;
+    size_t tl = strlen(text);
+    if (s_stream_len + tl >= sizeof(s_stream_buf) - 1) {
+        return;                         /* 超长保护 */
+    }
+    memcpy(s_stream_buf + s_stream_len, text, tl);
+    s_stream_len += tl;
+    s_stream_buf[s_stream_len] = '\0';
+
+    int64_t now = esp_timer_get_time();
+    if (now - s_last_flush_us >= 100 * 1000) {
+        s_last_flush_us = now;
+        ui_bridge_set_subtitle(s_stream_buf);
+    }
+}
+
+/** 串口一行对话输入（console 任务上下文，阻塞式跑完一轮） */
+static void on_chat_line(const char *text, void *ctx)
+{
+    (void)ctx;
+    ESP_LOGI("main", "对话输入: %s", text);
+    if (!bsp_wifi_is_connected()) {
+        ui_bridge_set_subtitle("……WiFi 还没连上呢，等一下再聊。");
+        ESP_LOGW("main", "WiFi 未连接，跳过本轮对话");
+        return;
+    }
+    s_stream_len = 0;
+    s_stream_buf[0] = '\0';
+    ui_bridge_set_dialog_state(SCR_DIALOG_THINKING);    /* 橙点=想 */
+
+    char *reply = dialog_ask(text, on_llm_token, NULL);
+    if (reply) {
+        s_last_flush_us = esp_timer_get_time();
+        ui_bridge_set_subtitle(reply);                  /* 终稿全覆盖一次 */
+        ESP_LOGI("main", "回复: %.100s", reply);        /* 远程验收用（截前100字节） */
+        free(reply);
+        ui_bridge_set_dialog_state(SCR_DIALOG_IDLE);    /* M2 接入 TTS 后改 SPEAKING */
+        ESP_LOGI("main", "回复完成");
+    } else {
+        ui_bridge_set_subtitle("……网络好像不太对劲，再试一次？");
+        ui_bridge_set_dialog_state(SCR_DIALOG_IDLE);
+    }
+}
+
 void user_app_run(void)
 {
     ESP_LOGI(TAG, "==========================================");
@@ -89,6 +144,11 @@ void user_app_run(void)
     scr_home_set_wifi_toggle_cb(on_wifi_toggle, NULL);
     ui_bridge_set_wifi_state((int)bsp_wifi_get_state());
     ui_bridge_set_time("--:--", false);     /* 开机未校时：灰色占位 */
+
+    /* 4c. AI 对话链路（Phase 3 M0）：LLM + 人设 + 串口输入 */
+    ESP_ERROR_CHECK(dialog_manager_init());
+    ESP_ERROR_CHECK(llm_client_init());
+    chat_console_start(on_chat_line, NULL);
 
     /* 5. 角色加载 + 动画渲染（M03 R5b：入住 live2d_area + 触摸表情） */
     static rig_model_t s_model;

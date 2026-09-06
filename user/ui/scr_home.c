@@ -49,6 +49,7 @@ typedef struct {
     lv_obj_t *time_label;       /* 时间显示标签 */
     lv_obj_t *live2d_area;      /* Live2D 角色区域 */
     lv_obj_t *subtitle_bar;     /* 底部字幕栏 */
+    lv_obj_t *dialog_dot;       /* 对话状态点（M0 状态层最小版，IDLE 隐藏） */
     lv_obj_t *subtitle_label;   /* 字幕文本标签 */
 } home_ui_t;
 
@@ -184,10 +185,20 @@ static void create_subtitle_bar(lv_obj_t *parent)
     lv_obj_set_style_radius(s_home_ui.subtitle_bar, 0, 0);        /* 无圆角 */
     lv_obj_set_style_pad_all(s_home_ui.subtitle_bar, 0, 0);
 
-    /* 居中排列子元素 */
+    /* 居中排列子元素（状态点 + 字幕文本，10px 间距） */
     lv_obj_set_flex_flow(s_home_ui.subtitle_bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(s_home_ui.subtitle_bar, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(s_home_ui.subtitle_bar, 10, 0);
+
+    /* 对话状态点（M0 状态层最小版）：IDLE 隐藏，听蓝/想橙/说绿 */
+    s_home_ui.dialog_dot = lv_obj_create(s_home_ui.subtitle_bar);
+    lv_obj_set_size(s_home_ui.dialog_dot, 10, 10);
+    lv_obj_set_style_radius(s_home_ui.dialog_dot, 5, 0);
+    lv_obj_set_style_bg_color(s_home_ui.dialog_dot, lv_color_hex(0x27AE60), 0);
+    lv_obj_set_style_border_width(s_home_ui.dialog_dot, 0, 0);
+    lv_obj_add_flag(s_home_ui.dialog_dot, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(s_home_ui.dialog_dot, LV_OBJ_FLAG_SCROLLABLE);
 
     /* 字幕文本标签（中文用 nino_cjk_16 字体） */
     s_home_ui.subtitle_label = lv_label_create(s_home_ui.subtitle_bar);
@@ -272,6 +283,26 @@ void scr_home_set_wifi_state(scr_wifi_state_t state)
     }
     lv_label_set_text(s_home_ui.wifi_label, text);
     lv_obj_set_style_text_color(s_home_ui.wifi_label, color, 0);
+}
+
+void scr_home_set_dialog_state(scr_dialog_state_t state)
+{
+    if (s_home_ui.dialog_dot == NULL) {
+        return;
+    }
+    lv_color_t color;
+    switch (state) {
+        case SCR_DIALOG_LISTENING:  color = lv_color_hex(0x4A90D9); break;  /* 蓝=听 */
+        case SCR_DIALOG_THINKING:   color = lv_color_hex(0xE67E22); break;  /* 橙=想 */
+        case SCR_DIALOG_SPEAKING:   color = lv_color_hex(0x27AE60); break;  /* 绿=说 */
+        default:                    color = lv_color_hex(0x27AE60); break;
+    }
+    lv_obj_set_style_bg_color(s_home_ui.dialog_dot, color, 0);
+    if (state == SCR_DIALOG_IDLE) {
+        lv_obj_add_flag(s_home_ui.dialog_dot, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_clear_flag(s_home_ui.dialog_dot, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 void scr_home_set_time(const char *time_str, bool synced)

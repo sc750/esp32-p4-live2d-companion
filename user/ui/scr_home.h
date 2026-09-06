@@ -65,6 +65,23 @@ lv_obj_t *scr_home_get_live2d_area(void);
 void scr_home_set_wifi_state(scr_wifi_state_t state);
 
 /**
+ * 对话状态（主页状态层 M0 最小版：字幕栏左侧的状态点）
+ * Phase 3 按需扩展成"字幕升高+波形+状态点"完整层
+ */
+typedef enum {
+    SCR_DIALOG_IDLE = 0,        /* 待机：点隐藏 */
+    SCR_DIALOG_LISTENING,       /* 听：蓝点 */
+    SCR_DIALOG_THINKING,        /* 想：橙点 */
+    SCR_DIALOG_SPEAKING,        /* 说：绿点 */
+} scr_dialog_state_t;
+
+/**
+ * @brief 更新对话状态点（颜色 + 显隐）
+ * @param[in] state  对话状态
+ */
+void scr_home_set_dialog_state(scr_dialog_state_t state);
+
+/**
  * @brief 更新状态栏时间显示（"HH:MM"；未同步时由调用方传 "--:--"）
  *
  * R12：synced=false（NTP 断流，晶振续走的"非权威时间"）时文字变灰，
