@@ -35,7 +35,7 @@ foreach ($a in $args) {
 
 # ===== 配置（与 .sh 同步）=====
 $APP_LAYER_DIRS = @('app','application','project/code/app','src/app','code/app')
-$VENDOR_DIRS    = @('libraries','sdk','vendor','third_party','Drivers','Middlewares','managed_components','build')
+$VENDOR_DIRS    = @('libraries','sdk','vendor','third_party','Drivers','Middlewares','managed_components','build','PainterEngine-master','mori_miko')
 $VENDOR_HEADERS_RE = '#\s*include\s+[<"](stm32[a-z0-9_]*\.h|gd32[a-z0-9_]*\.h|esp_system\.h|esp_[a-z0-9_]+\.h|driver/gpio\.h|ti_msp_dl_config\.h|nrf[a-z0-9_]*\.h|nrfx[a-z0-9_]*\.h|Ifx[A-Za-z0-9_]+\.h|ifx[a-z0-9_]+_reg\.h|SysSe/[^>"]+|Bsp\.h|DA[A-Z0-9]+\.h|hal/nrf_[a-z0-9_]+\.h)[>"]'
 $CATCH_ALL_HEADERS_RE   = '#\s*include\s+[<"]([a-z_]*_?common_?headfile\.h|[a-z_]*_headfile\.h|headfile\.h|all\.h|globals\.h|project\.h)[>"]'
 $CATCH_ALL_WHITELIST_RE = 'zf_common_headfile\.h'
@@ -235,6 +235,9 @@ function Invoke-Check5 {
     foreach ($f in (Get-FilesByExt '.' @('.c'))) {
         $rel = Get-RelPath $f.FullName
         if (Test-VendorPath $rel) { continue }
+        # 生成文件豁免：lv_font_conv 等 LVGL 字体转换器产出的数据数组天然超行数
+        # （约定：生成的字体 C 文件一律命名为 lv_font_<名字>.c）
+        if ($rel -match '(^|/)lv_font_[a-z0-9_]+\.c$') { continue }
         $disp = "./$rel"
         $lc = 0
         foreach ($l in (Read-Lines $f.FullName)) { $lc++ }

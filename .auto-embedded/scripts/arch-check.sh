@@ -40,7 +40,7 @@ fi
 
 # ===== 配置 =====
 APP_LAYER_DIRS=(app application project/code/app src/app code/app)
-VENDOR_DIRS=(libraries sdk vendor third_party Drivers Middlewares)
+VENDOR_DIRS=(libraries sdk vendor third_party Drivers Middlewares managed_components build PainterEngine-master mori_miko)
 # 厂商头：STM32 / GD32 / ESP-IDF / TI MSPM0 / Nordic / Infineon TC2xx / Dialog
 VENDOR_HEADERS_RE='#[[:space:]]*include[[:space:]]+[<"](stm32[a-z0-9_]*\.h|gd32[a-z0-9_]*\.h|esp_system\.h|esp_[a-z0-9_]+\.h|driver/gpio\.h|ti_msp_dl_config\.h|nrf[a-z0-9_]*\.h|nrfx[a-z0-9_]*\.h|Ifx[A-Za-z0-9_]+\.h|ifx[a-z0-9_]+_reg\.h|SysSe/[^>"]+|Bsp\.h|DA[A-Z0-9]+\.h|hal/nrf_[a-z0-9_]+\.h)[>"]'
 # Catch-all mega-header（Seekfree 风格统一头文件，间接拉入厂商头 → 等同违规）
@@ -223,6 +223,11 @@ check_c_file_length() {
     echo ">>> [5/7] .c file length" >&2
     find . -type f -name "*.c" 2>/dev/null | while IFS= read -r cf; do
         if is_vendor_path "$cf"; then continue; fi
+        # 生成文件豁免：lv_font_conv 等 LVGL 字体转换器产出的数据数组天然超行数
+        # （约定：生成的字体 C 文件一律命名为 lv_font_<名字>.c）
+        case "$cf" in
+            *lv_font_*.c) continue ;;
+        esac
         lc=$(wc -l < "$cf" 2>/dev/null | tr -d '[:space:]')
         [ -z "$lc" ] && continue
         if [ "$lc" -gt "$C_FILE_MAX_LINES" ]; then
