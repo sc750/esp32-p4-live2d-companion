@@ -83,3 +83,6 @@ docs/key与说明文档.md
 # 测试残留日志
 m0_*.log
 m0_*.txt
+
+# Codex 实验构建树
+build_*/
