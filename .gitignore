@@ -86,3 +86,7 @@ m0_*.txt
 
 # Codex 实验构建树
 build_*/
+
+# 编辑器/工具备份文件
+*.pre_refactor
+*.bak
