@@ -36,6 +36,12 @@ static struct {
     bool err_dumped;    /* 错误载荷只 dump 一次 */
 } s_tts;
 
+/** 单次请求的音频回调上下文；SSE 处理在 tts_synthesize 调用期内同步执行。 */
+typedef struct {
+    tts_audio_cb_t on_audio;
+    void *ctx;
+} tts_callback_ctx_t;
+
 esp_err_t tts_client_init(void)
 {
     if (s_tts.inited) {
@@ -57,7 +63,7 @@ esp_err_t tts_client_init(void)
 /** SSE 单行 → delta.audio.data → base64 解码 → PCM 回调 */
 static void sse_audio_handler(const char *data_line, void *arg)
 {
-    tts_audio_cb_t on_audio = (tts_audio_cb_t)arg;
+    tts_callback_ctx_t *callback = (tts_callback_ctx_t *)arg;
     if (strcmp(data_line, "[DONE]") == 0) {
         return;
     }
@@ -86,7 +92,7 @@ static void sse_audio_handler(const char *data_line, void *arg)
                 if (s_tts.chunks == 1) {
                     ESP_LOGI(TAG, "收到首个音频块 (%uB)，开始播放", (unsigned)olen);
                 }
-                on_audio((const int16_t *)pcm, olen / 2, NULL);
+                callback->on_audio((const int16_t *)pcm, olen / 2, callback->ctx);
             }
             free(pcm);
         }
@@ -125,12 +131,15 @@ esp_err_t tts_synthesize(const char *text, const char *style,
              style ? style : "", esc);
     free(esc);
 
-    /* ctx 传递未用（MVP 单回调直传）；此处借用 arg 直通 */
+    tts_callback_ctx_t callback = {
+        .on_audio = on_audio,
+        .ctx = ctx,
+    };
     s_tts.chunks = 0;
     s_tts.bytes = 0;
     s_tts.err_dumped = false;
     esp_err_t err = ai_http_post_sse(s_tts.url, s_tts.key, body,
-                                     sse_audio_handler, (void *)on_audio, 60);
+                                     sse_audio_handler, &callback, 60);
     free(body);
     ESP_LOGI(TAG, "TTS 流结束: %d 块 / %uKB PCM%s",
              s_tts.chunks, (unsigned)(s_tts.bytes / 1024),

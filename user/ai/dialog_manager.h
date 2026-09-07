@@ -20,6 +20,9 @@ extern "C" {
 /** 初始化（加载人设与历史缓冲；幂等） */
 esp_err_t dialog_manager_init(void);
 
+/** LLM 流内完成一个可朗读短句时调用；回调必须快速返回。 */
+typedef void (*dialog_sentence_cb_t)(const char *sentence, void *ctx);
+
 /**
  * @brief 发起一轮对话（阻塞直到 LLM 回复完成）
  *
@@ -33,6 +36,14 @@ esp_err_t dialog_manager_init(void);
  * @return 完整回复文本（堆上，调用方 free）；失败返回 NULL
  */
 char *dialog_ask(const char *user_text, llm_token_cb_t on_token, void *ctx);
+
+/**
+ * @brief 流式对话，并在句末实时回调，供 TTS 与后续 LLM 输出并行。
+ *
+ * 句末按中英文句号、问号、感叹号和换行判定；返回值与 dialog_ask 相同。
+ */
+char *dialog_ask_stream(const char *user_text, llm_token_cb_t on_token,
+                        dialog_sentence_cb_t on_sentence, void *ctx);
 
 #ifdef __cplusplus
 }

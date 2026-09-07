@@ -110,12 +110,88 @@ static cJSON *build_messages(const char *user_text)
 /** token 回调 trampoline：转发 UI 回调 + 攒完整回复（自动扩容） */
 typedef struct {
     llm_token_cb_t user_cb;
+    dialog_sentence_cb_t sentence_cb;
     void *user_ctx;
     char *buf;
     size_t len, cap;
+    char sentence[512];
+    size_t sentence_len;
 } reply_acc_t;
 
-static char *dialog_ask_locked(const char *user_text, llm_token_cb_t on_token, void *ctx);
+static char *dialog_ask_locked(const char *user_text, llm_token_cb_t on_token,
+                               dialog_sentence_cb_t on_sentence, void *ctx);
+
+static bool is_sentence_end(const char *text, size_t remain, size_t *width)
+{
+    if (text[0] == '.' || text[0] == '!' || text[0] == '?' || text[0] == '\n') {
+        *width = 1;
+        return true;
+    }
+    if (remain >= 3) {
+        bool chinese_period = (uint8_t)text[0] == 0xE3 &&
+                              (uint8_t)text[1] == 0x80 &&
+                              (uint8_t)text[2] == 0x82;
+        bool chinese_exclaim_or_question = (uint8_t)text[0] == 0xEF &&
+                                            (uint8_t)text[1] == 0xBC &&
+                                            ((uint8_t)text[2] == 0x81 ||
+                                             (uint8_t)text[2] == 0x9F);
+        if (chinese_period || chinese_exclaim_or_question) {
+            *width = 3;
+            return true;
+        }
+    }
+    return false;
+}
+
+/** 软断句只在短语已有一定长度时生效，避免把自然语言切成单字播报。 */
+static bool is_phrase_break(const char *text, size_t remain, size_t *width)
+{
+    if (text[0] == ',' || text[0] == ';' || text[0] == ':') {
+        *width = 1;
+        return true;
+    }
+    if (remain >= 3) {
+        bool chinese_comma = (uint8_t)text[0] == 0xEF &&
+                             (uint8_t)text[1] == 0xBC &&
+                             (uint8_t)text[2] == 0x8C;
+        bool chinese_enumeration_comma = (uint8_t)text[0] == 0xE3 &&
+                                         (uint8_t)text[1] == 0x80 &&
+                                         (uint8_t)text[2] == 0x81;
+        if (chinese_comma || chinese_enumeration_comma) {
+            *width = 3;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void sentence_append(reply_acc_t *ra, const char *text)
+{
+    if (!ra->sentence_cb) {
+        return;
+    }
+    size_t len = strlen(text);
+    size_t pos = 0;
+    while (pos < len) {
+        size_t width = 1;
+        bool terminal = is_sentence_end(text + pos, len - pos, &width);
+        bool soft_break = !terminal && is_phrase_break(text + pos, len - pos, &width);
+        if (ra->sentence_len + width >= sizeof(ra->sentence)) {
+            /* 回答异常长且没有标点时，仍然保证 TTS 不会无限等待。 */
+            ra->sentence[ra->sentence_len] = '\0';
+            ra->sentence_cb(ra->sentence, ra->user_ctx);
+            ra->sentence_len = 0;
+        }
+        memcpy(ra->sentence + ra->sentence_len, text + pos, width);
+        ra->sentence_len += width;
+        pos += width;
+        if ((terminal || (soft_break && ra->sentence_len >= 18)) && ra->sentence_len > 0) {
+            ra->sentence[ra->sentence_len] = '\0';
+            ra->sentence_cb(ra->sentence, ra->user_ctx);
+            ra->sentence_len = 0;
+        }
+    }
+}
 
 static void reply_token_cb(const char *text, void *arg)
 {
@@ -139,6 +215,7 @@ static void reply_token_cb(const char *text, void *arg)
     if (ra->user_cb) {
         ra->user_cb(text, ra->user_ctx);
     }
+    sentence_append(ra, text);
 }
 
 esp_err_t dialog_manager_init(void)
@@ -156,6 +233,12 @@ esp_err_t dialog_manager_init(void)
 
 char *dialog_ask(const char *user_text, llm_token_cb_t on_token, void *ctx)
 {
+    return dialog_ask_stream(user_text, on_token, NULL, ctx);
+}
+
+char *dialog_ask_stream(const char *user_text, llm_token_cb_t on_token,
+                        dialog_sentence_cb_t on_sentence, void *ctx)
+{
     ESP_RETURN_ON_FALSE(s_dlg.inited && user_text && user_text[0],
                         NULL, TAG, "bad arg");
     /* 串口对话（console 任务）与语音对话（voice 任务）可能并发，
@@ -164,13 +247,14 @@ char *dialog_ask(const char *user_text, llm_token_cb_t on_token, void *ctx)
         ESP_LOGW(TAG, "上一轮对话还没结束，本轮丢弃");
         return NULL;
     }
-    char *result = dialog_ask_locked(user_text, on_token, ctx);
+    char *result = dialog_ask_locked(user_text, on_token, on_sentence, ctx);
     xSemaphoreGive(s_dlg.lock);
     return result;
 }
 
 /** 持锁版：真实流程（历史/组包/LLM/拼装） */
-static char *dialog_ask_locked(const char *user_text, llm_token_cb_t on_token, void *ctx)
+static char *dialog_ask_locked(const char *user_text, llm_token_cb_t on_token,
+                               dialog_sentence_cb_t on_sentence, void *ctx)
 {
 
     /* 入参副本进历史（截断保护） */
@@ -193,6 +277,7 @@ static char *dialog_ask_locked(const char *user_text, llm_token_cb_t on_token, v
 
     reply_acc_t acc = {
         .user_cb = on_token,
+        .sentence_cb = on_sentence,
         .user_ctx = ctx,
         .buf = heap_caps_malloc(REPLY_BUF_INIT, MALLOC_CAP_SPIRAM),
         .len = 0,
@@ -207,6 +292,11 @@ static char *dialog_ask_locked(const char *user_text, llm_token_cb_t on_token, v
 
     esp_err_t err = llm_chat_stream(messages_json, reply_token_cb, &acc);
     free(messages_json);
+
+    if (err == ESP_OK && acc.sentence_cb && acc.sentence_len > 0) {
+        acc.sentence[acc.sentence_len] = '\0';
+        acc.sentence_cb(acc.sentence, acc.user_ctx);
+    }
 
     if (err != ESP_OK || acc.len == 0) {
         ESP_LOGW(TAG, "LLM 一轮失败: %s", esp_err_to_name(err));
