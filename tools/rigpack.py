@@ -387,6 +387,43 @@ def pack(src_dir, path):
         print(f"[rigpack] {name}: bbox=({rx0},{ry0})-({rx1},{ry1})")
 
     write_rigbin(path, W, H, layers, atlas)
+    selfcheck_body_reach(path)          # R14：端到端合成自检，腿脚必须入画
+
+
+def selfcheck_body_reach(path):
+    """产出后端到端合成自检（R14 教训：结构校验骗得过，合成骗不过）。
+
+    回读 rigbin，检查 body 层的实际内容（非透明行）是否触达 canvas 底部
+    ——腿脚必须入画。能机械拦住"atlas 声明尺寸正常但内容截断"的整类 bug
+    （region 语义错/切割下界错/resize 事故都逃不掉）。"""
+    import struct as _st
+    import numpy as _np
+    d = open(path, 'rb').read()
+    magic, ver, flags, cw, ch, nl, *_ = _st.unpack_from('<4sHHHHHHHII', d, 0)
+    off = 32
+    body = None
+    for _ in range(nl):
+        name, parent, ax, ay, aw, ah, bx, by, z, fl, _r1, _r2 = _st.unpack_from(
+            '<12shHHHHhhhHIH', d, off)
+        off += 36
+        if name.split(b'\0')[0].decode() == 'body':
+            body = (ax, ay, aw, ah, bx, by)
+    if body is None:
+        print('[rigpack] 自检跳过（无 body 层）')
+        return
+    aw_, ah_ = _st.unpack_from('<HH', d, off)
+    off += 4
+    a = _np.frombuffer(d[off:off + aw_ * ah_ * 4], dtype=_np.uint8).reshape(ah_, aw_, 4)
+    ax, ay, aw, ah, bx, by = body
+    region = a[ay:ay + ah, ax:ax + aw, 3]          # body 层的 alpha
+    rows = _np.where((region > 0).any(axis=1))[0]
+    content_bottom = (int(rows[-1]) if len(rows) else -1) + by
+    if content_bottom < ch * 0.95:
+        raise SystemExit(
+            f'[rigpack] 自检 FAIL: body 内容只到 canvas {content_bottom}/{ch} '
+            f'（{content_bottom * 100 // ch}%），腿脚疑似截断——'
+            f'检查 crop 下界 / push 的 region 语义')
+    print(f'[rigpack] 自检 PASS: body 内容触达 canvas {content_bottom}/{ch}')
 
 
 # ---------------------------------------------------------------- 入口
