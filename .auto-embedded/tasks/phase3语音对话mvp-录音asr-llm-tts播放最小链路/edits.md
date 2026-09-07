@@ -8,3 +8,4 @@
 | M1c | 三玖全身修复：pack() push() 的 region 语义错（PIL crop box 被当 xywh 解，atlas_h 记了 lower 值）+ body 切割下界公式错（应为图片底部 H）——双重 bug 负负得正骗过 verify，膝盖以下内容全丢 | 合成目检：小腿袜+皮鞋完整入画 | ✅ 重打包烧录完成 | 0a1e00b |
 | M2b | Codex 提交回归测试：发现并修复 UI 创建与 LVGL 渲染任务的无锁竞态（WiFi 异步化曝光的祖传时序 bug）——ui_manager_init 全程持 adapter 锁；另修 build.bat 工具链路径失效（20241119→20260121）；清理实验构建树 | 复位后看门狗 0 次、UI 完整初始化、WiFi 拿 IP、NTP 同步、24fps | ✅ 全绿 | - |
 | M3 | 延迟优化三箭头：⏱ 分段计时埋点（ASR/LLM首句/TTS首块/全程）；system prompt 首句≤15字；录音单声道化（左声道抽取，上传减半，缓冲 2MB→937KB）。量化数据：ASR 6.1s(59%) / LLM 首句 2.1s / TTS 首块 2.2s，首音延迟 ≈10.4s；播放 underflows=0；句间缝 ~1.5s（短句播快于下句合成） | 数据齐备，确认 ASR 非流式为头号瓶颈 → 换流式 ASR 优先 | ✅ 实测三轮 | - |
+| M4 | 讯飞流式听写适配层：xfyun_iat.c（hmac-sha256 URL 鉴权 + WS 帧协议 1280B/40ms + 结果追加拼接，官方文档逐条核对）+ esp_websocket_client 托管组件 + Kconfig 三凭据 + asr_client 运行时后端选择（讯飞失败自动回退 MiMo）| 编译零错烧录通过；看门狗 0/系统就绪/讯飞模块加载 ✓；待 key 联调 | ✅ 代码就绪等 key | - |

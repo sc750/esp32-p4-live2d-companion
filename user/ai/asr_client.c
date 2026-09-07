@@ -24,6 +24,7 @@
 #include "cJSON.h"
 
 #include "ai_http.h"
+#include "xfyun_iat.h"
 
 #define TAG "asr"
 
@@ -48,6 +49,8 @@ esp_err_t asr_client_init(void)
     strlcpy(s_asr.key, CONFIG_AI_MIMO_KEY, sizeof(s_asr.key));
     s_asr.inited = true;
     ESP_LOGI(TAG, "ASR 就绪: %s (model=mimo-v2.5-asr)", s_asr.url);
+    /* 讯飞流式后端（配置了 APPID 才启用；失败自动回退 MiMo） */
+    xfyun_iat_init();
     return ESP_OK;
 }
 
@@ -77,6 +80,18 @@ esp_err_t asr_recognize(const char *wav, size_t wav_len, char **text_out)
     ESP_RETURN_ON_FALSE(s_asr.inited && wav && wav_len > 44 && text_out,
                         ESP_ERR_INVALID_ARG, TAG, "bad arg");
     *text_out = NULL;
+
+    /* ---- 后端选择：配置了讯飞 APPID → 流式听写（wss）；否则 MiMo REST ----
+     * 讯飞要裸 PCM（无 WAV 头）；我们的录音是单声道 16k/16bit，恰好满足。
+     * 讯飞分帧 40ms/1280B：上传耗时≈音频时长，但识别并行、末帧后 ~300ms
+     * 出全文——总耗时 ≈ max(音频时长, 2s)，远优于 MiMo 整段的 6s。 */
+    if (xfyun_iat_configured()) {
+        esp_err_t xerr = xfyun_iat_recognize(wav + 44, wav_len - 44, text_out);
+        if (xerr == ESP_OK) {
+            return ESP_OK;
+        }
+        ESP_LOGW(TAG, "讯飞识别失败(%s)，回退 MiMo 整段", esp_err_to_name(xerr));
+    }
 
     /* ---- 1. 分块 base64 编码到 body 中段 ----
      * 输入 3 字节 → 输出 4 字节；按 3000B 分块（除 pad 干净），末块单独编 */

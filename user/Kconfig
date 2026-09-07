@@ -13,12 +13,24 @@ menu "AI 对话服务配置（phase3）"
         default "deepseek-v4-flash"
 
     config AI_MIMO_BASE_URL
-        string "小米 MiMo token plan base URL（M1/M2 的 ASR/TTS 用）"
+        string "小米 MiMo token plan base URL（MiMo ASR/TTS 用）"
         default "https://token-plan-cn.xiaomimimo.com/v1"
 
     config AI_MIMO_KEY
         string "小米 MiMo API Key"
         default "REDACTED_MIMO_KEY"
+
+    config ASR_XFYUN_APPID
+        string "讯飞 APPID（非空则 ASR 走讯飞流式听写，否则用 MiMo）"
+        default ""
+
+    config ASR_XFYUN_APIKEY
+        string "讯飞 APIKey（32 位）"
+        default ""
+
+    config ASR_XFYUN_APISECRET
+        string "讯飞 APISecret（32 位）"
+        default ""
 
     config AI_DIALOG_HISTORY_ROUNDS
         int "对话历史保留轮数（1 轮 = 一问一答）"
