@@ -173,6 +173,11 @@ void rig_rig_trigger(rig_expr_t expr)
 
 void rig_rig_set_mouth(rig_mouth_t level)
 {
+    if (level == RIG_MOUTH_AUTO) {
+        /* 释放外部控制：交还 idle 演示串（否则 TTS 播一次后 idle 永久失效） */
+        s.mouth_ext_active = false;
+        return;
+    }
     s.mouth_ext = level;
     s.mouth_ext_active = true;
 }

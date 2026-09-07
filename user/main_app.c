@@ -52,7 +52,7 @@ static void on_chatter_line(const char *text, uint32_t speak_ms, void *ctx)
 }
 
 /**
- * @brief Wi-Fi 开关切捔回调（状态栏滑块 → BSP 连接/断开）
+ * @brief Wi-Fi 开关切换回调（状态栏滑块 → BSP 连接/断开）
  *
  * UI 层不直接碰 BSP：scr_home 只拨开关，这里做真正的连接/断开动作。
  * ON = 按 Kconfig 配置连接（并打开自动重连闸门）；OFF = 断开并停用重连。
@@ -152,8 +152,8 @@ static void on_chat_line(const char *text, void *ctx)
         s_last_flush_us = esp_timer_get_time();
         ui_bridge_set_subtitle(reply);                  /* 终稿全覆盖一次 */
         ESP_LOGI("main", "回复: %.100s", reply);        /* 远程验收用（截前100字节） */
+        voice_pipeline_speak(reply);                    /* M2：播报回复（声音+口型） */
         free(reply);
-        ui_bridge_set_dialog_state(DIALOG_STATE_IDLE);    /* M2 接入 TTS 后改 SPEAKING */
         ESP_LOGI("main", "回复完成");
     } else {
         ui_bridge_set_subtitle("……网络好像不太对劲，再试一次？");

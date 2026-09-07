@@ -93,6 +93,9 @@ esp_err_t bsp_audio_set_fs(uint32_t rate, uint32_t bits, uint32_t channels)
     if (s_play_handle) {
         ESP_RETURN_ON_ERROR(esp_codec_dev_close(s_play_handle), TAG, "close play failed");
         ESP_RETURN_ON_ERROR(esp_codec_dev_open(s_play_handle, &fs), TAG, "open play failed");
+        /* 重开后台子系统的音量状态不保证保留——必须重设，否则可能静音（M2 教训） */
+        ESP_RETURN_ON_ERROR(esp_codec_dev_set_out_vol(s_play_handle, s_volume),
+                            TAG, "re-apply out vol failed");
     }
     if (s_record_handle) {
         ESP_RETURN_ON_ERROR(esp_codec_dev_close(s_record_handle), TAG, "close record failed");

@@ -32,6 +32,7 @@ typedef enum {
     RIG_MOUTH_CLOSED = 0,
     RIG_MOUTH_HALF   = 1,
     RIG_MOUTH_OPEN   = 2,
+    RIG_MOUTH_AUTO   = 3,   /* 释放外部控制，交还 idle 演示串（TTS 播完用） */
 } rig_mouth_t;
 
 /**

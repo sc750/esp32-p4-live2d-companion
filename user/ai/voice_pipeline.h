@@ -46,6 +46,17 @@ void voice_pipeline_hold_stop(void);
  */
 esp_err_t voice_pipeline_record_ms(uint32_t ms);
 
+/**
+ * @brief 播报一句话（M2：TTS 流式 + 口型同步；阻塞至播完）
+ *
+ * 绿点（SPEAKING）期间拉取 MiMo TTS（24k/mono pcm16）连播扬声器，
+ * 口型随音频能量开合；播完回 IDLE 并释放口型控制。
+ * 串口文本对话与语音对话共用本出口。
+ *
+ * @param text 要念的文本（LLM 回复）
+ */
+void voice_pipeline_speak(const char *text);
+
 #ifdef __cplusplus
 }
 #endif

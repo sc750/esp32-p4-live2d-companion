@@ -20,18 +20,21 @@
 
 #define TAG "ai_http"
 
-/* SSE 行缓冲：TTS 流式单行是数 KB 的 base64 音频块，给足余量（PSRAM） */
-#define SSE_LINE_BUF_SIZE   (16 * 1024)
+/* SSE 行缓冲：TTS 流式单行可能是整段音频的大 base64，给足余量（PSRAM）。
+ * 注意：超长行会被静默截断——解析端需能容忍残行（cJSON 解析失败即忽略） */
+#define SSE_LINE_BUF_SIZE   (64 * 1024)
 
 /** 请求公共准备：创建 client + 头 + 发 body。成功后 *out 持有句柄 */
 static esp_err_t http_common_setup(esp_http_client_handle_t *out,
                                    const char *url, const char *api_key,
-                                   const char *json_body)
+                                   const char *json_body, int timeout_ms)
 {
     esp_http_client_config_t cfg = {
         .url = url,
         .method = HTTP_METHOD_POST,
-        .timeout_ms = 10 * 1000,                    /* 连接超时 */
+        /* 流式 TTS 相邻音频块可能间隔十几秒，读取超时必须由调用方传入。
+         * 过去这里写死 10 秒，tts_synthesize(..., 60) 实际完全没生效。 */
+        .timeout_ms = timeout_ms,
         .buffer_size = 4 * 1024,
         .buffer_size_tx = 4 * 1024,
         .crt_bundle_attach = esp_crt_bundle_attach, /* HTTPS 证书校验（内置 CA 集） */
@@ -70,9 +73,9 @@ esp_err_t ai_http_post_sse(const char *url, const char *api_key,
                            const char *json_body, ai_sse_cb_t on_data,
                            void *ctx, int recv_timeout_s)
 {
-    (void)recv_timeout_s;   /* 读阻塞超时由 timeout_ms 兜底（esp_http_client 语义） */
     esp_http_client_handle_t client = NULL;
-    esp_err_t err = http_common_setup(&client, url, api_key, json_body);
+    int timeout_ms = (recv_timeout_s > 0 ? recv_timeout_s : 10) * 1000;
+    esp_err_t err = http_common_setup(&client, url, api_key, json_body, timeout_ms);
     if (err != ESP_OK) {
         return err;
     }
@@ -100,8 +103,10 @@ esp_err_t ai_http_post_sse(const char *url, const char *api_key,
         goto out;
     }
     size_t llen = 0;
+    size_t total_read = 0;                      /* 诊断：服务端到底发了多少 */
     int r;
     while ((r = esp_http_client_read(client, rbuf, sizeof(rbuf))) > 0) {
+        total_read += r;
         for (int i = 0; i < r; i++) {
             char c = rbuf[i];
             if (c == '\r') continue;
@@ -129,6 +134,7 @@ esp_err_t ai_http_post_sse(const char *url, const char *api_key,
         ESP_LOGW(TAG, "读流中断（recv 超时或连接关闭）");
         ret = ESP_ERR_TIMEOUT;
     }
+    ESP_LOGI(TAG, "SSE 流结束: 共读 %lu 字节", (unsigned long)total_read);
 out:
     free(line);
     free(rbuf);
@@ -141,9 +147,9 @@ esp_err_t ai_http_post_json(const char *url, const char *api_key,
                             char *resp_buf, size_t resp_size,
                             int recv_timeout_s)
 {
-    (void)recv_timeout_s;
     esp_http_client_handle_t client = NULL;
-    esp_err_t err = http_common_setup(&client, url, api_key, json_body);
+    int timeout_ms = (recv_timeout_s > 0 ? recv_timeout_s : 10) * 1000;
+    esp_err_t err = http_common_setup(&client, url, api_key, json_body, timeout_ms);
     if (err != ESP_OK) {
         return err;
     }

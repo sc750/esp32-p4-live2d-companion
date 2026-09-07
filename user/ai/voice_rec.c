@@ -10,6 +10,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 #include "esp_log.h"
 #include "esp_check.h"
@@ -21,12 +22,18 @@
 
 #define CHUNK_BYTES     (6400)      /* 100ms @ 16k/16bit/2ch */
 #define REC_BUF_SIZE    (VOICE_REC_MAX_SEC * 64000)
+#define AGC_TARGET_PEAK  (12000)    /* 约 -8.7dBFS，给语音峰值留出余量 */
+#define AGC_MAX_GAIN_X1000 (8000)   /* 最多 8 倍，避免把底噪放成爆音 */
+#define AGC_MIN_PEAK     (200)      /* 低于此值通常是静音，不作增益 */
 
 static struct {
     bool inited;
     char *buf;                  /* PSRAM 2MB：[0,44)=WAV头，[44,44+pcm)=PCM */
     size_t pcm_len;             /* 已录 PCM 字节数 */
     bool recording;
+    int32_t peak;               /* 本段最大采样幅值，用于判断麦克风是否真有输入 */
+    uint64_t energy;            /* 所有声道样本的平方和，用于计算 RMS */
+    size_t sample_count;
 } s_rec;
 
 esp_err_t voice_rec_init(void)
@@ -46,7 +53,13 @@ esp_err_t voice_rec_begin(void)
 {
     ESP_RETURN_ON_FALSE(s_rec.inited, ESP_ERR_INVALID_STATE, TAG, "not init");
     ESP_RETURN_ON_FALSE(!s_rec.recording, ESP_ERR_INVALID_STATE, TAG, "already rec");
+
+    /* 音频 BSP 从启动起固定为官方已验证的 16k/16bit/双声道。
+     * TTS 的 24k/单声道 PCM 在应用层转换，录音时绝不重开共享 codec。 */
     s_rec.pcm_len = 0;
+    s_rec.peak = 0;
+    s_rec.energy = 0;
+    s_rec.sample_count = 0;
     s_rec.recording = true;
     return ESP_OK;
 }
@@ -63,6 +76,17 @@ void voice_rec_chunk(void)
         ESP_LOGW(TAG, "录音块读取失败");
         return;
     }
+
+    const int16_t *pcm = (const int16_t *)(s_rec.buf + 44 + s_rec.pcm_len);
+    for (size_t i = 0; i < CHUNK_BYTES / sizeof(*pcm); i++) {
+        int32_t sample = pcm[i];
+        int32_t magnitude = sample >= 0 ? sample : -sample;
+        if (magnitude > s_rec.peak) {
+            s_rec.peak = magnitude;
+        }
+        s_rec.energy += (uint64_t)((int64_t)sample * sample);
+    }
+    s_rec.sample_count += CHUNK_BYTES / sizeof(*pcm);
     s_rec.pcm_len += CHUNK_BYTES;
 }
 
@@ -104,12 +128,39 @@ esp_err_t voice_rec_end_and_get(char **wav_out, size_t *len_out)
     wav_put_u16(h + 34, 16);                    /* 位深 */
     memcpy(h + 36, "data", 4);
     wav_put_u32(h + 40, (uint32_t)s_rec.pcm_len);
-    memcpy(out + 44, s_rec.buf, s_rec.pcm_len);
+    memcpy(out + 44, s_rec.buf + 44, s_rec.pcm_len);
+
+    /* 板载麦克风在远距离说话时原始幅度很低，云端 ASR 会将其判为静音。
+     * 用整段峰值做受限 AGC；采集格式不变，只提升有效语音的量化幅度。 */
+    uint32_t gain_x1000 = 1000;
+    if (s_rec.peak >= AGC_MIN_PEAK && s_rec.peak < AGC_TARGET_PEAK) {
+        gain_x1000 = (uint32_t)((uint64_t)AGC_TARGET_PEAK * 1000 / s_rec.peak);
+        if (gain_x1000 > AGC_MAX_GAIN_X1000) {
+            gain_x1000 = AGC_MAX_GAIN_X1000;
+        }
+    }
+    if (gain_x1000 > 1000) {
+        int16_t *out_pcm = (int16_t *)(out + 44);
+        size_t sample_count = s_rec.pcm_len / sizeof(*out_pcm);
+        for (size_t i = 0; i < sample_count; i++) {
+            int32_t scaled = (int32_t)((int64_t)out_pcm[i] * gain_x1000 / 1000);
+            if (scaled > INT16_MAX) {
+                scaled = INT16_MAX;
+            } else if (scaled < INT16_MIN) {
+                scaled = INT16_MIN;
+            }
+            out_pcm[i] = (int16_t)scaled;
+        }
+    }
 
     *wav_out = out;
     *len_out = total;
-    ESP_LOGI(TAG, "录音完成: %ums / %uKB",
-             (unsigned)(s_rec.pcm_len / 64), (unsigned)(total / 1024));
+    uint32_t rms = s_rec.sample_count
+                   ? (uint32_t)sqrt((double)s_rec.energy / s_rec.sample_count) : 0;
+    ESP_LOGI(TAG, "录音完成: %ums / %uKB, peak=%ld, rms=%lu, agc=%lux",
+             (unsigned)(s_rec.pcm_len / 64), (unsigned)(total / 1024),
+             (long)s_rec.peak, (unsigned long)rms,
+             (unsigned long)gain_x1000 / 1000);
     return ESP_OK;
 }
 
