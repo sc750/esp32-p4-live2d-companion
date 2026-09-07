@@ -30,6 +30,7 @@
 
 /* 4. 平台/厂商头 */
 #include "esp_log.h"
+#include "esp_lv_adapter.h"       /* R14：adapter 锁（LVGL 对象创建持锁） */
 #include "lvgl.h"
 
 static const char *TAG = "ui_mgr";
@@ -88,6 +89,12 @@ static void on_state_change(app_state_t old_state, app_state_t new_state,
  * @brief 初始化 UI 管理器
  *
  * 创建 LVGL 主屏幕和所有页面，注册状态变化回调。
+ *
+ * R14 关键修复：全部 LVGL 对象创建必须持 adapter 锁！
+ * 过去 bsp_wifi 同步初始化阻塞 ~2s，LVGL 任务早已就绪且"碰巧"时序
+ * 错开；Codex 把 WiFi 初始化改异步后，UI 创建与 LVGL 渲染任务毫秒级
+ * 撞车 → main 在 lv_inv_area 死循环（任务看门狗反复告警）。
+ * adapter 锁是递归锁，navigate 等嵌套调用安全。
  */
 esp_err_t ui_manager_init(void)
 {
@@ -97,6 +104,8 @@ esp_err_t ui_manager_init(void)
 
     /* 初始化主题（默认使用日间主题） */
     theme_manager_init(THEME_DAY);
+
+    esp_lv_adapter_lock(-1);            /* R14：LVGL 对象操作全程持锁 */
 
     /* 创建 LVGL 主屏幕（所有页面都放在这个屏幕上） */
     s_scr_main = lv_obj_create(NULL);                    /* 创建空屏幕 */
@@ -118,12 +127,14 @@ esp_err_t ui_manager_init(void)
     /* 默认显示首页 */
     ui_manager_navigate(UI_PAGE_HOME);
 
+    lv_obj_set_style_bg_color(s_scr_main, theme_manager_get_colors()->bg_color, 0);
+    lv_obj_set_style_bg_opa(s_scr_main, LV_OPA_COVER, 0);
+    esp_lv_adapter_unlock();
+
     /* 注册状态变化回调：状态机切换时自动切换页面 */
     app_state_machine_on_change(on_state_change, NULL);
 
     ESP_LOGI(TAG, "UI 管理器初始化完成");
-    lv_obj_set_style_bg_color(s_scr_main, theme_manager_get_colors()->bg_color, 0);
-    lv_obj_set_style_bg_opa(s_scr_main, LV_OPA_COVER, 0);
     return ESP_OK;
 }
 
