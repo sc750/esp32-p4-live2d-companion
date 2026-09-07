@@ -200,32 +200,35 @@ static void create_subtitle_bar(lv_obj_t *parent)
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(s_home_ui.subtitle_bar, 10, 0);
 
-    /* 平衡垫（与麦克风按钮同宽，把中间字幕挤到真居中） */
+    /* 平衡垫（与麦克风按钮同宽，把中间字幕挤到真居中）
+     * 顺序坑：必须先 remove_style_all 再 set_size——剥样式会把尺寸属性
+     * 一起剥掉，反着来尺寸会回退成主题默认值（M1 模拟器实测） */
     lv_obj_t *pad = lv_obj_create(s_home_ui.subtitle_bar);
+    lv_obj_remove_style_all(pad);
     lv_obj_set_size(pad, 136, 1);
-    lv_obj_set_style_bg_opa(pad, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(pad, 0, 0);
-    lv_obj_clear_flag(pad, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* 对话状态点（M0 状态层最小版）：IDLE 隐藏，听蓝/想橙/说绿 */
+    /* 对话状态点（M1 美化）：剥光默认主题，纯色小圆（否则自带边框
+     * 内边距衬得 10px 圆点怪模怪样） */
     s_home_ui.dialog_dot = lv_obj_create(s_home_ui.subtitle_bar);
-    lv_obj_set_size(s_home_ui.dialog_dot, 10, 10);
-    lv_obj_set_style_radius(s_home_ui.dialog_dot, 5, 0);
+    lv_obj_remove_style_all(s_home_ui.dialog_dot);
+    lv_obj_set_size(s_home_ui.dialog_dot, 12, 12);
+    lv_obj_set_style_radius(s_home_ui.dialog_dot, 6, 0);
     lv_obj_set_style_bg_color(s_home_ui.dialog_dot, lv_color_hex(0x27AE60), 0);
-    lv_obj_set_style_border_width(s_home_ui.dialog_dot, 0, 0);
+    lv_obj_set_style_bg_opa(s_home_ui.dialog_dot, LV_OPA_COVER, 0);
     lv_obj_add_flag(s_home_ui.dialog_dot, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(s_home_ui.dialog_dot, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* 字幕文本标签（中文用 nino_cjk_16 字体） */
+    /* 字幕文本（M1 修复溢出）：固定宽 984 在三段式布局里会挤爆 1024
+     * 屏宽（文字被顶出屏幕）→ 收窄到 700 并改 WRAP 换行 + 居中对齐 */
     s_home_ui.subtitle_label = lv_label_create(s_home_ui.subtitle_bar);
     lv_label_set_text(s_home_ui.subtitle_label, "你好！点击角色开始聊天 ~");
     lv_obj_set_style_text_color(s_home_ui.subtitle_label,
                                 lv_color_hex(0xFFFFFF), 0);  /* 白色文字 */
     lv_obj_set_style_text_font(s_home_ui.subtitle_label,
                                nino_font_cjk16(), 0);
-    /* 超长文本自动截断显示省略号 */
-    lv_label_set_long_mode(s_home_ui.subtitle_label, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(s_home_ui.subtitle_label, SCR_WIDTH - 40);
+    lv_label_set_long_mode(s_home_ui.subtitle_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(s_home_ui.subtitle_label, 700);
+    lv_obj_set_style_text_align(s_home_ui.subtitle_label,
+                                LV_TEXT_ALIGN_CENTER, 0);
 
     /* 按住说话按钮（M1）：喇叭图标 + 文字，按下开始录音、松开送识别 */
     s_home_ui.mic_btn = lv_btn_create(s_home_ui.subtitle_bar);
