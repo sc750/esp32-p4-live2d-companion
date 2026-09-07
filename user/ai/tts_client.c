@@ -20,6 +20,7 @@
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "mbedtls/base64.h"
 #include "cJSON.h"
 
@@ -34,6 +35,7 @@ static struct {
     int chunks;         /* 诊断：收到的音频块数 */
     size_t bytes;       /* 诊断：累计 PCM 字节 */
     bool err_dumped;    /* 错误载荷只 dump 一次 */
+    int64_t t0;         /* 合成起点（算首块延迟） */
 } s_tts;
 
 /** 单次请求的音频回调上下文；SSE 处理在 tts_synthesize 调用期内同步执行。 */
@@ -90,7 +92,9 @@ static void sse_audio_handler(const char *data_line, void *arg)
                 s_tts.chunks++;
                 s_tts.bytes += olen;
                 if (s_tts.chunks == 1) {
-                    ESP_LOGI(TAG, "收到首个音频块 (%uB)，开始播放", (unsigned)olen);
+                    ESP_LOGI(TAG, "收到首个音频块 (%uB)，开始播放 "
+                             "（⏱ TTS 首块: %lldms）", (unsigned)olen,
+                             (esp_timer_get_time() - s_tts.t0) / 1000);
                 }
                 callback->on_audio((const int16_t *)pcm, olen / 2, callback->ctx);
             }
@@ -138,6 +142,7 @@ esp_err_t tts_synthesize(const char *text, const char *style,
     s_tts.chunks = 0;
     s_tts.bytes = 0;
     s_tts.err_dumped = false;
+    s_tts.t0 = esp_timer_get_time();
     esp_err_t err = ai_http_post_sse(s_tts.url, s_tts.key, body,
                                      sse_audio_handler, &callback, 60);
     free(body);

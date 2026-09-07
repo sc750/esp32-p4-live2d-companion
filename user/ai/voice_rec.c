@@ -20,11 +20,15 @@
 
 #define TAG "voice_rec"
 
-#define CHUNK_BYTES     (6400)      /* 100ms @ 16k/16bit/2ch */
-#define REC_BUF_SIZE    (VOICE_REC_MAX_SEC * 64000)
+#define CHUNK_BYTES     (6400)      /* 100ms @ 16k/16bit/2ch（BSP 采集格式，不变） */
+#define MONO_CHUNK_BYTES (3200)     /* 左声道抽取后：100ms @ 16k/16bit/1ch */
+#define REC_BUF_SIZE    (VOICE_REC_MAX_SEC * 32000)
 #define AGC_TARGET_PEAK  (12000)    /* 约 -8.7dBFS，给语音峰值留出余量 */
 #define AGC_MAX_GAIN_X1000 (8000)   /* 最多 8 倍，避免把底噪放成爆音 */
 #define AGC_MIN_PEAK     (200)      /* 低于此值通常是静音，不作增益 */
+
+/* 立体声采集暂存（内部 RAM，I2S 块直读） */
+static int16_t s_staging[CHUNK_BYTES / sizeof(int16_t)];
 
 static struct {
     bool inited;
@@ -69,25 +73,29 @@ void voice_rec_chunk(void)
     if (!s_rec.recording) {
         return;
     }
-    if (s_rec.pcm_len + CHUNK_BYTES > REC_BUF_SIZE - 44) {
+    if (s_rec.pcm_len + MONO_CHUNK_BYTES > REC_BUF_SIZE - 44) {
         return;                                 /* 到达 30s 上限，静默停写 */
     }
-    if (bsp_audio_record(s_rec.buf + 44 + s_rec.pcm_len, CHUNK_BYTES) != ESP_OK) {
+    /* 读立体声块到暂存（BSP 固定 16k/16bit/2ch 采集，绝不重开 codec） */
+    if (bsp_audio_record(s_staging, CHUNK_BYTES) != ESP_OK) {
         ESP_LOGW(TAG, "录音块读取失败");
         return;
     }
-
-    const int16_t *pcm = (const int16_t *)(s_rec.buf + 44 + s_rec.pcm_len);
-    for (size_t i = 0; i < CHUNK_BYTES / sizeof(*pcm); i++) {
-        int32_t sample = pcm[i];
+    /* M3 单声道化：ES8311 是单声道麦克风，右声道纯冗余——
+     * 只保留左声道，上传体积减半（ASR 上传时间近似减半） */
+    int16_t *dst = (int16_t *)(s_rec.buf + 44 + s_rec.pcm_len);
+    const size_t mono_samples = CHUNK_BYTES / 2 / sizeof(int16_t);
+    for (size_t i = 0; i < mono_samples; i++) {
+        int32_t sample = s_staging[i * 2];      /* 偶数样本 = 左声道 */
+        dst[i] = (int16_t)sample;
         int32_t magnitude = sample >= 0 ? sample : -sample;
         if (magnitude > s_rec.peak) {
             s_rec.peak = magnitude;
         }
         s_rec.energy += (uint64_t)((int64_t)sample * sample);
     }
-    s_rec.sample_count += CHUNK_BYTES / sizeof(*pcm);
-    s_rec.pcm_len += CHUNK_BYTES;
+    s_rec.sample_count += mono_samples;
+    s_rec.pcm_len += MONO_CHUNK_BYTES;
 }
 
 static void wav_put_u32(uint8_t *p, uint32_t v)
@@ -106,8 +114,8 @@ esp_err_t voice_rec_end_and_get(char **wav_out, size_t *len_out)
     s_rec.recording = false;
 
     /* 最短 200ms：太短给 ASR 是浪费一次调用 */
-    ESP_RETURN_ON_FALSE(s_rec.pcm_len >= 12800, ESP_ERR_INVALID_SIZE,
-                        TAG, "录音太短 (%ums)", (unsigned)(s_rec.pcm_len / 64));
+    ESP_RETURN_ON_FALSE(s_rec.pcm_len >= 6400, ESP_ERR_INVALID_SIZE,
+                        TAG, "录音太短 (%ums)", (unsigned)(s_rec.pcm_len / 32));
 
     /* 内部缓冲常驻复用；拷出有效段（44 头 + PCM）交调用方 */
     size_t total = 44 + s_rec.pcm_len;
@@ -121,10 +129,10 @@ esp_err_t voice_rec_end_and_get(char **wav_out, size_t *len_out)
     memcpy(h + 12, "fmt ", 4);
     wav_put_u32(h + 16, 16);                    /* fmt 块长 */
     wav_put_u16(h + 20, 1);                     /* PCM */
-    wav_put_u16(h + 22, 2);                     /* 声道 */
+    wav_put_u16(h + 22, 1);                     /* 单声道（M3） */
     wav_put_u32(h + 24, 16000);                 /* 采样率 */
-    wav_put_u32(h + 28, 16000 * 2 * 2);         /* 字节率 */
-    wav_put_u16(h + 32, 2 * 2);                 /* 块对齐 */
+    wav_put_u32(h + 28, 16000 * 1 * 2);         /* 字节率 */
+    wav_put_u16(h + 32, 1 * 2);                 /* 块对齐 */
     wav_put_u16(h + 34, 16);                    /* 位深 */
     memcpy(h + 36, "data", 4);
     wav_put_u32(h + 40, (uint32_t)s_rec.pcm_len);
@@ -158,7 +166,7 @@ esp_err_t voice_rec_end_and_get(char **wav_out, size_t *len_out)
     uint32_t rms = s_rec.sample_count
                    ? (uint32_t)sqrt((double)s_rec.energy / s_rec.sample_count) : 0;
     ESP_LOGI(TAG, "录音完成: %ums / %uKB, peak=%ld, rms=%lu, agc=%lux",
-             (unsigned)(s_rec.pcm_len / 64), (unsigned)(total / 1024),
+             (unsigned)(s_rec.pcm_len / 32), (unsigned)(total / 1024),
              (long)s_rec.peak, (unsigned long)rms,
              (unsigned long)gain_x1000 / 1000);
     return ESP_OK;
@@ -175,5 +183,5 @@ void voice_rec_abort(void)
 
 uint32_t voice_rec_elapsed_ms(void)
 {
-    return s_rec.pcm_len / 64;                  /* 64 字节/ms */
+    return s_rec.pcm_len / 32;                  /* 32 字节/ms（单声道） */
 }

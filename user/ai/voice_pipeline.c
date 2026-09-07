@@ -71,6 +71,8 @@ static QueueHandle_t s_tts_queue;
 static QueueHandle_t s_tts_ready_queue;
 static volatile uint32_t s_tts_pending;
 static volatile bool s_tts_input_done;
+static volatile int64_t s_t_release = 0;        /* M3 延迟量化：松手时刻 */
+static volatile int64_t s_t_first_sentence = 0; /* M3 延迟量化：LLM 首句时刻 */
 static volatile bool s_tts_stream_active;
 static SemaphoreHandle_t s_speak_lock;
 static SemaphoreHandle_t s_tts_request_lock;
@@ -117,6 +119,12 @@ static void on_reply_sentence(const char *sentence, void *ctx)
     (void)ctx;
     if (!sentence[0] || !s_tts_queue) {
         return;
+    }
+    /* M3 延迟量化：LLM 首句耗时（只记一次） */
+    if (s_t_first_sentence == 0) {
+        s_t_first_sentence = esp_timer_get_time();
+        ESP_LOGI(TAG, "⏱ LLM 首句: %lldms",
+                 (s_t_first_sentence - s_t_release) / 1000);
     }
     tts_sentence_t item = {0};
     strlcpy(item.text, sentence, sizeof(item.text));
@@ -287,6 +295,10 @@ static void process_wav(char *wav, size_t wav_len)
     ui_state(DIALOG_STATE_THINKING);
     ui_text("……让我听听你说了啥");
 
+    const int64_t t0 = esp_timer_get_time();    /* M3 延迟量化起点（≈松手） */
+    s_t_release = t0;
+    s_t_first_sentence = 0;
+
     char *text = NULL;
     esp_err_t err = asr_recognize(wav, wav_len, &text);
     free(wav);
@@ -296,6 +308,8 @@ static void process_wav(char *wav, size_t wav_len)
         return;
     }
     ESP_LOGI(TAG, "识别: %s", text);
+    ESP_LOGI(TAG, "⏱ ASR: %lldms（含上传）",
+             (esp_timer_get_time() - t0) / 1000);
 
     s_reply_len = 0;
     s_reply_text[0] = '\0';
@@ -312,6 +326,8 @@ static void process_wav(char *wav, size_t wav_len)
         while (__atomic_load_n(&s_tts_pending, __ATOMIC_RELAXED) > 0) {
             vTaskDelay(pdMS_TO_TICKS(50));
         }
+        ESP_LOGI(TAG, "⏱ 全程: %lldms（松手→播完）",
+                 (esp_timer_get_time() - t0) / 1000);
         rig_rig_set_mouth(RIG_MOUTH_CLOSED);
         rig_rig_set_mouth(RIG_MOUTH_AUTO);
         s_tts_stream_active = false;
