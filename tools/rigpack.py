@@ -333,15 +333,19 @@ def pack(src_dir, path):
 
     def push(name, img, region, base_x, base_y, z, parent=-1, flags=0):
         nonlocal ly
-        cx, cy, cw, ch = region
+        # region 语义 = PIL crop box (left, upper, right, lower)；
+        # 宽高必须由 right-left / lower-upper 推出（R14 教训：曾把 lower
+        # 当高度用，body 层膝盖以下全丢，atlas 尺寸还"碰巧"看起来正常）
+        rx0, ry0, rx1, ry1 = region
+        cw, ch = rx1 - rx0, ry1 - ry0
         atlas.paste(img.crop(region), (0, ly))
         layers.append(dict(name=name, parent=parent, atlas_x=0, atlas_y=ly,
                            atlas_w=cw, atlas_h=ch, base_x=base_x, base_y=base_y,
                            z=z, flags=flags))
         ly += ch
 
-    # body: 颈线以下（含 overlap）
-    push(L_BODY, base, (0, neck_y - overlap, W, H - neck_y + overlap), 0, neck_y - overlap, 0)
+    # body: 颈线以下直到图片底部（含 overlap；腿脚必须完整入层）
+    push(L_BODY, base, (0, neck_y - overlap, W, H), 0, neck_y - overlap, 0)
     # head: 颈线以上（含 overlap），底边羽化——头移动时切线渐变不露硬边
     head_img = base.crop((0, 0, W, neck_y + overlap))
     feather = head_img.load()
