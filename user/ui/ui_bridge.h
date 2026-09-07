@@ -27,7 +27,7 @@ extern "C" {
 /** 更新主页字幕（任意任务安全；文本须为常量或调用方保证生命周期） */
 void ui_bridge_set_subtitle(const char *text);
 
-/** 更新对话状态点（state 取 scr_dialog_state_t 值，任意任务安全） */
+/** 更新对话状态点（state 取 dialog_state_t 值，任意任务安全） */
 void ui_bridge_set_dialog_state(int state);
 
 /** 更新 Wi-Fi 状态显示（R12：滑块+三态文案；state 取 scr_wifi_state_t 值） */

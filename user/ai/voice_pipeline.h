@@ -1,0 +1,53 @@
+/**
+ * @file    voice_pipeline.h
+ * @brief   语音管线编排（L5）——录音 → ASR → LLM → 字幕 全流程
+ *
+ * 两个入口：
+ *   按住说话   hold_start/hold_stop（LVGL 按钮事件调用，非阻塞，内部任务跑）
+ *   定时录音   record_ms（阻塞，串口调试/自动化测试用）
+ *
+ * UI 反馈经注入回调（main_app 接 ui_bridge），ai 层不直接依赖 ui。
+ *
+ * @date    2026-09-06
+ * @version 1.0.0
+ */
+
+#ifndef VOICE_PIPELINE_H
+#define VOICE_PIPELINE_H
+
+#include <stdint.h>
+#include "esp_err.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/** UI 反馈回调（state 取 scr_dialog_state_t 值） */
+typedef struct {
+    void (*on_state)(int state, void *ctx);
+    void (*on_subtitle)(const char *text, void *ctx);
+    void *ctx;
+} voice_ui_cb_t;
+
+esp_err_t voice_pipeline_init(void);
+
+/** 注入 UI 回调（init 后、首次使用前调用） */
+void voice_pipeline_set_ui(const voice_ui_cb_t *cb);
+
+/** 按住说话：按下沿（非阻塞，录制在内部任务中进行） */
+void voice_pipeline_hold_start(void);
+
+/** 按住说话：松开沿（停止录音并走完 ASR+LLM 管线） */
+void voice_pipeline_hold_stop(void);
+
+/**
+ * @brief 定时录音：录 ms 毫秒后走完 ASR+LLM（阻塞，调用方任务内执行）
+ * @note  串口调试/自动化测试入口；与按住说话互斥（忙时直接返回忙）
+ */
+esp_err_t voice_pipeline_record_ms(uint32_t ms);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* VOICE_PIPELINE_H */

@@ -109,6 +109,17 @@ typedef enum {
 } app_event_type_t;
 
 /**
+ * 对话状态（M1：主页状态层与语音管线共享的中立词汇。
+ * 定义在 app_events 而非 scr_home，避免 ai 层反向依赖 ui 层）
+ */
+typedef enum {
+    DIALOG_STATE_IDLE = 0,      /* 待机：状态点隐藏 */
+    DIALOG_STATE_LISTENING,     /* 听：蓝点 */
+    DIALOG_STATE_THINKING,      /* 想：橙点 */
+    DIALOG_STATE_SPEAKING,      /* 说：绿点 */
+} dialog_state_t;
+
+/**
  * @brief 事件载荷联合体
  *
  * 不同类型的事件携带不同的数据。

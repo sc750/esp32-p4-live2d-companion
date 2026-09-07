@@ -22,6 +22,8 @@
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "cJSON.h"
 
 #define TAG "dialog"
@@ -51,6 +53,7 @@ typedef struct {
 
 static struct {
     bool inited;
+    SemaphoreHandle_t lock;     /* 串口对话与语音对话并发保护（M1） */
     dialog_round_t rounds[CONFIG_AI_DIALOG_HISTORY_ROUNDS];
     int head;                   /* 最旧一轮的下标（环形） */
     int count;                  /* 环内有效轮数 */
@@ -112,6 +115,8 @@ typedef struct {
     size_t len, cap;
 } reply_acc_t;
 
+static char *dialog_ask_locked(const char *user_text, llm_token_cb_t on_token, void *ctx);
+
 static void reply_token_cb(const char *text, void *arg)
 {
     reply_acc_t *ra = (reply_acc_t *)arg;
@@ -142,6 +147,7 @@ esp_err_t dialog_manager_init(void)
         return ESP_OK;
     }
     memset(&s_dlg, 0, sizeof(s_dlg));
+    s_dlg.lock = xSemaphoreCreateMutex();
     s_dlg.inited = true;
     ESP_LOGI(TAG, "对话管理器就绪（人设: 中野三玖, 历史 %d 轮）",
              CONFIG_AI_DIALOG_HISTORY_ROUNDS);
@@ -152,6 +158,20 @@ char *dialog_ask(const char *user_text, llm_token_cb_t on_token, void *ctx)
 {
     ESP_RETURN_ON_FALSE(s_dlg.inited && user_text && user_text[0],
                         NULL, TAG, "bad arg");
+    /* 串口对话（console 任务）与语音对话（voice 任务）可能并发，
+     * 一轮对话全程持锁串行化 */
+    if (xSemaphoreTake(s_dlg.lock, pdMS_TO_TICKS(15000)) != pdTRUE) {
+        ESP_LOGW(TAG, "上一轮对话还没结束，本轮丢弃");
+        return NULL;
+    }
+    char *result = dialog_ask_locked(user_text, on_token, ctx);
+    xSemaphoreGive(s_dlg.lock);
+    return result;
+}
+
+/** 持锁版：真实流程（历史/组包/LLM/拼装） */
+static char *dialog_ask_locked(const char *user_text, llm_token_cb_t on_token, void *ctx)
+{
 
     /* 入参副本进历史（截断保护） */
     char *user_copy = heap_caps_malloc(MSG_MAX_LEN, MALLOC_CAP_SPIRAM);

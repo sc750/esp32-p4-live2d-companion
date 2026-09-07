@@ -23,6 +23,7 @@
 #include "time_sync.h"
 #include "dialog_manager.h"
 #include "chat_console.h"
+#include "voice_pipeline.h"
 #include "esp_timer.h"
 #include "rig_model.h"
 #include "rig_lvgl.h"
@@ -90,11 +91,53 @@ static void on_llm_token(const char *text, void *ctx)
     }
 }
 
-/** 串口一行对话输入（console 任务上下文，阻塞式跑完一轮） */
+/** 按住说话按钮：按下沿开录、松开沿停录（LVGL 任务只发信号不阻塞） */
+static void on_voice_hold(bool holding, void *ctx)
+{
+    (void)ctx;
+    if (holding) {
+        voice_pipeline_hold_start();
+    } else {
+        voice_pipeline_hold_stop();
+    }
+}
+
+/** 语音管线的 UI 反馈 → 桥接到字幕/状态点 */
+static void on_voice_state(int state, void *ctx)
+{
+    (void)ctx;
+    ui_bridge_set_dialog_state(state);
+}
+
+static void on_voice_subtitle(const char *text, void *ctx)
+{
+    (void)ctx;
+    ui_bridge_set_subtitle(text);
+}
+
+/** 串口一行：语音录音命令或对话文本（console 任务上下文，阻塞式跑完） */
 static void on_chat_line(const char *text, void *ctx)
 {
     (void)ctx;
     ESP_LOGI("main", "对话输入: %s", text);
+
+    /* "rec 3" = 录 3 秒并走完整语音管线（M1 管线调试口） */
+    if (strncmp(text, "rec ", 4) == 0) {
+        int sec = atoi(text + 4);
+        if (sec < 1 || sec > 30) {
+            ui_bridge_set_subtitle("rec 用法：rec 1~30（秒）");
+            return;
+        }
+        char hint[64];
+        snprintf(hint, sizeof(hint), "录音 %ds 中，请说话……", sec);
+        ui_bridge_set_subtitle(hint);
+        esp_err_t err = voice_pipeline_record_ms((uint32_t)sec * 1000);
+        if (err != ESP_OK) {
+            ESP_LOGW("main", "rec 失败: %s", esp_err_to_name(err));
+        }
+        return;
+    }
+
     if (!bsp_wifi_is_connected()) {
         ui_bridge_set_subtitle("……WiFi 还没连上呢，等一下再聊。");
         ESP_LOGW("main", "WiFi 未连接，跳过本轮对话");
@@ -102,7 +145,7 @@ static void on_chat_line(const char *text, void *ctx)
     }
     s_stream_len = 0;
     s_stream_buf[0] = '\0';
-    ui_bridge_set_dialog_state(SCR_DIALOG_THINKING);    /* 橙点=想 */
+    ui_bridge_set_dialog_state(DIALOG_STATE_THINKING);    /* 橙点=想 */
 
     char *reply = dialog_ask(text, on_llm_token, NULL);
     if (reply) {
@@ -110,11 +153,11 @@ static void on_chat_line(const char *text, void *ctx)
         ui_bridge_set_subtitle(reply);                  /* 终稿全覆盖一次 */
         ESP_LOGI("main", "回复: %.100s", reply);        /* 远程验收用（截前100字节） */
         free(reply);
-        ui_bridge_set_dialog_state(SCR_DIALOG_IDLE);    /* M2 接入 TTS 后改 SPEAKING */
+        ui_bridge_set_dialog_state(DIALOG_STATE_IDLE);    /* M2 接入 TTS 后改 SPEAKING */
         ESP_LOGI("main", "回复完成");
     } else {
         ui_bridge_set_subtitle("……网络好像不太对劲，再试一次？");
-        ui_bridge_set_dialog_state(SCR_DIALOG_IDLE);
+        ui_bridge_set_dialog_state(DIALOG_STATE_IDLE);
     }
 }
 
@@ -145,9 +188,17 @@ void user_app_run(void)
     ui_bridge_set_wifi_state((int)bsp_wifi_get_state());
     ui_bridge_set_time("--:--", false);     /* 开机未校时：灰色占位 */
 
-    /* 4c. AI 对话链路（Phase 3 M0）：LLM + 人设 + 串口输入 */
+    /* 4c. AI 对话链路（Phase 3）：LLM + 人设 + 串口输入 + 语音管线 */
     ESP_ERROR_CHECK(dialog_manager_init());
     ESP_ERROR_CHECK(llm_client_init());
+    ESP_ERROR_CHECK(voice_pipeline_init());
+    voice_ui_cb_t voice_ui = {
+        .on_state = on_voice_state,
+        .on_subtitle = on_voice_subtitle,
+        .ctx = NULL,
+    };
+    voice_pipeline_set_ui(&voice_ui);
+    scr_home_set_voice_hold_cb(on_voice_hold, NULL);
     chat_console_start(on_chat_line, NULL);
 
     /* 5. 角色加载 + 动画渲染（M03 R5b：入住 live2d_area + 触摸表情） */

@@ -23,6 +23,7 @@
 
 #include <stdbool.h>
 #include "lvgl.h"
+#include "app_events.h"   /* dialog_state_t：UI 与语音管线共享词汇 */
 
 #ifdef __cplusplus
 extern "C" {
@@ -50,6 +51,16 @@ typedef enum {
 lv_obj_t *scr_home_create(lv_obj_t *parent);
 
 /**
+ * @brief 注册按住说话回调（M1；编排层注入，UI 不碰音频）
+ *
+ * 用户按下麦克风按钮 → cb(true)；松开/滑出 → cb(false)。
+ *
+ * @param[in] cb   回调（NULL=注销）
+ * @param[in] ctx  回调上下文
+ */
+void scr_home_set_voice_hold_cb(void (*cb)(bool holding, void *ctx), void *ctx);
+
+/**
  * @brief 获取 Live2D 角色区域对象（角色渲染容器，M03 起启用）
  * @return 区域对象；scr_home_create 未调用时返回 NULL
  */
@@ -65,21 +76,10 @@ lv_obj_t *scr_home_get_live2d_area(void);
 void scr_home_set_wifi_state(scr_wifi_state_t state);
 
 /**
- * 对话状态（主页状态层 M0 最小版：字幕栏左侧的状态点）
- * Phase 3 按需扩展成"字幕升高+波形+状态点"完整层
- */
-typedef enum {
-    SCR_DIALOG_IDLE = 0,        /* 待机：点隐藏 */
-    SCR_DIALOG_LISTENING,       /* 听：蓝点 */
-    SCR_DIALOG_THINKING,        /* 想：橙点 */
-    SCR_DIALOG_SPEAKING,        /* 说：绿点 */
-} scr_dialog_state_t;
-
-/**
  * @brief 更新对话状态点（颜色 + 显隐）
  * @param[in] state  对话状态
  */
-void scr_home_set_dialog_state(scr_dialog_state_t state);
+void scr_home_set_dialog_state(dialog_state_t state);
 
 /**
  * @brief 更新状态栏时间显示（"HH:MM"；未同步时由调用方传 "--:--"）

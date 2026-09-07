@@ -51,6 +51,7 @@ typedef struct {
     lv_obj_t *subtitle_bar;     /* 底部字幕栏 */
     lv_obj_t *dialog_dot;       /* 对话状态点（M0 状态层最小版，IDLE 隐藏） */
     lv_obj_t *subtitle_label;   /* 字幕文本标签 */
+    lv_obj_t *mic_btn;          /* 按住说话按钮（M1） */
 } home_ui_t;
 
 /* Home 页面的 UI 对象实例（静态全局，本模块独占） */
@@ -59,6 +60,14 @@ static home_ui_t s_home_ui;
 /* Wi-Fi 开关切捔回调（编排层经 set_wifi_toggle_cb 注入，UI 不碰 BSP） */
 static void (*s_wifi_toggle_cb)(bool turn_on, void *ctx) = NULL;
 static void *s_wifi_toggle_ctx = NULL;
+
+/* 按住说话回调（编排层注入：true=按下开始录，false=松开停止） */
+static void (*s_voice_hold_cb)(bool holding, void *ctx) = NULL;
+static void *s_voice_hold_ctx = NULL;
+
+/* 前向声明：麦克风按钮事件 */
+static void on_mic_pressed(lv_event_t *e);
+static void on_mic_released(lv_event_t *e);
 
 /**
  * @brief Wi-Fi 开关拨动回调（用户操作触发；程序设 CHECKED 不触发事件）
@@ -185,11 +194,18 @@ static void create_subtitle_bar(lv_obj_t *parent)
     lv_obj_set_style_radius(s_home_ui.subtitle_bar, 0, 0);        /* 无圆角 */
     lv_obj_set_style_pad_all(s_home_ui.subtitle_bar, 0, 0);
 
-    /* 居中排列子元素（状态点 + 字幕文本，10px 间距） */
+    /* 三段式布局：[平衡垫] [状态点+字幕] [按住说话] —— 字幕保持居中 */
     lv_obj_set_flex_flow(s_home_ui.subtitle_bar, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(s_home_ui.subtitle_bar, LV_FLEX_ALIGN_CENTER,
+    lv_obj_set_flex_align(s_home_ui.subtitle_bar, LV_FLEX_ALIGN_SPACE_BETWEEN,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(s_home_ui.subtitle_bar, 10, 0);
+
+    /* 平衡垫（与麦克风按钮同宽，把中间字幕挤到真居中） */
+    lv_obj_t *pad = lv_obj_create(s_home_ui.subtitle_bar);
+    lv_obj_set_size(pad, 136, 1);
+    lv_obj_set_style_bg_opa(pad, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(pad, 0, 0);
+    lv_obj_clear_flag(pad, LV_OBJ_FLAG_SCROLLABLE);
 
     /* 对话状态点（M0 状态层最小版）：IDLE 隐藏，听蓝/想橙/说绿 */
     s_home_ui.dialog_dot = lv_obj_create(s_home_ui.subtitle_bar);
@@ -210,6 +226,48 @@ static void create_subtitle_bar(lv_obj_t *parent)
     /* 超长文本自动截断显示省略号 */
     lv_label_set_long_mode(s_home_ui.subtitle_label, LV_LABEL_LONG_DOT);
     lv_obj_set_width(s_home_ui.subtitle_label, SCR_WIDTH - 40);
+
+    /* 按住说话按钮（M1）：喇叭图标 + 文字，按下开始录音、松开送识别 */
+    s_home_ui.mic_btn = lv_btn_create(s_home_ui.subtitle_bar);
+    lv_obj_set_size(s_home_ui.mic_btn, 136, 44);
+    const theme_colors_t *mic_colors = theme_manager_get_colors();
+    lv_obj_set_style_bg_color(s_home_ui.mic_btn, mic_colors->primary_color, 0);
+    lv_obj_set_style_radius(s_home_ui.mic_btn, 22, 0);
+    lv_obj_set_style_pad_all(s_home_ui.mic_btn, 0, 0);
+    lv_obj_set_style_shadow_width(s_home_ui.mic_btn, 0, 0);
+    lv_obj_add_event_cb(s_home_ui.mic_btn, on_mic_pressed, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(s_home_ui.mic_btn, on_mic_released, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(s_home_ui.mic_btn, on_mic_released, LV_EVENT_PRESS_LOST, NULL);
+
+    lv_obj_t *mic_sym = lv_label_create(s_home_ui.mic_btn);
+    lv_label_set_text(mic_sym, LV_SYMBOL_AUDIO);
+    lv_obj_set_style_text_color(mic_sym, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(mic_sym, &lv_font_montserrat_14, 0);
+    lv_obj_align(mic_sym, LV_ALIGN_LEFT_MID, 12, 0);
+
+    lv_obj_t *mic_txt = lv_label_create(s_home_ui.mic_btn);
+    lv_label_set_text(mic_txt, "按住说话");
+    lv_obj_set_style_text_color(mic_txt, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(mic_txt, nino_font_cjk16(), 0);
+    lv_obj_align(mic_txt, LV_ALIGN_RIGHT_MID, -12, 0);
+}
+
+/** 按住说话：按下沿 → 开始录音 */
+static void on_mic_pressed(lv_event_t *e)
+{
+    (void)e;
+    if (s_voice_hold_cb) {
+        s_voice_hold_cb(true, s_voice_hold_ctx);
+    }
+}
+
+/** 按住说话：松开沿（含滑出按钮的 PRESS_LOST）→ 停止录音 */
+static void on_mic_released(lv_event_t *e)
+{
+    (void)e;
+    if (s_voice_hold_cb) {
+        s_voice_hold_cb(false, s_voice_hold_ctx);
+    }
 }
 
 /**
@@ -285,20 +343,20 @@ void scr_home_set_wifi_state(scr_wifi_state_t state)
     lv_obj_set_style_text_color(s_home_ui.wifi_label, color, 0);
 }
 
-void scr_home_set_dialog_state(scr_dialog_state_t state)
+void scr_home_set_dialog_state(dialog_state_t state)
 {
     if (s_home_ui.dialog_dot == NULL) {
         return;
     }
     lv_color_t color;
     switch (state) {
-        case SCR_DIALOG_LISTENING:  color = lv_color_hex(0x4A90D9); break;  /* 蓝=听 */
-        case SCR_DIALOG_THINKING:   color = lv_color_hex(0xE67E22); break;  /* 橙=想 */
-        case SCR_DIALOG_SPEAKING:   color = lv_color_hex(0x27AE60); break;  /* 绿=说 */
+        case DIALOG_STATE_LISTENING:  color = lv_color_hex(0x4A90D9); break;  /* 蓝=听 */
+        case DIALOG_STATE_THINKING:   color = lv_color_hex(0xE67E22); break;  /* 橙=想 */
+        case DIALOG_STATE_SPEAKING:   color = lv_color_hex(0x27AE60); break;  /* 绿=说 */
         default:                    color = lv_color_hex(0x27AE60); break;
     }
     lv_obj_set_style_bg_color(s_home_ui.dialog_dot, color, 0);
-    if (state == SCR_DIALOG_IDLE) {
+    if (state == DIALOG_STATE_IDLE) {
         lv_obj_add_flag(s_home_ui.dialog_dot, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_clear_flag(s_home_ui.dialog_dot, LV_OBJ_FLAG_HIDDEN);
@@ -321,6 +379,12 @@ void scr_home_set_wifi_toggle_cb(void (*cb)(bool turn_on, void *ctx), void *ctx)
 {
     s_wifi_toggle_cb = cb;
     s_wifi_toggle_ctx = ctx;
+}
+
+void scr_home_set_voice_hold_cb(void (*cb)(bool holding, void *ctx), void *ctx)
+{
+    s_voice_hold_cb = cb;
+    s_voice_hold_ctx = ctx;
 }
 
 void scr_home_set_subtitle(const char *text)
