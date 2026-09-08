@@ -22,15 +22,15 @@ menu "AI 对话服务配置（phase3）"
 
     config ASR_XFYUN_APPID
         string "讯飞 APPID（非空则 ASR 走讯飞流式听写，否则用 MiMo）"
-        default ""
+        default "REDACTED_XFYUN_APPID"
 
     config ASR_XFYUN_APIKEY
         string "讯飞 APIKey（32 位）"
-        default ""
+        default "REDACTED_XFYUN_KEY"
 
     config ASR_XFYUN_APISECRET
         string "讯飞 APISecret（32 位）"
-        default ""
+        default "REDACTED_XFYUN_SECRET"
 
     config AI_DIALOG_HISTORY_ROUNDS
         int "对话历史保留轮数（1 轮 = 一问一答）"

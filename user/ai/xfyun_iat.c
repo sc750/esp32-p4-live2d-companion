@@ -190,10 +190,15 @@ static esp_err_t build_auth_url(char *out, size_t cap)
  */
 static void parse_result_json(const char *json, size_t json_len)
 {
-    char tmp[2048];                                         /* 以 '\0' 结尾的解析副本 */
-    size_t cp = json_len < sizeof(tmp) - 1 ? json_len : sizeof(tmp) - 1; /* 截断保护 */
-    memcpy(tmp, json, cp);                                  /* 拷贝 JSON 文本 */
-    tmp[cp] = '\0';                                         /* 确保字符串结尾 */
+    /* 解析副本走堆：本函数跑在 websocket 组件任务里（默认栈仅 4KB），
+     * 2KB 栈副本+cJSON 帧曾把组件栈打爆（M4 栈保护崩机实测） */
+    char *tmp = heap_caps_malloc(json_len + 1, MALLOC_CAP_DEFAULT); /* 堆上解析副本 */
+    if (!tmp) {                                             /* 分配失败（罕见） */
+        ESP_LOGW(TAG, "结果解析副本分配失败");               /* 告警放弃本片 */
+        return;                                             /* 静默丢弃 */
+    }
+    memcpy(tmp, json, json_len);                            /* 拷贝 JSON 文本 */
+    tmp[json_len] = '\0';                                   /* 确保字符串结尾 */
 
     cJSON *root = cJSON_Parse(tmp);                         /* 解析整段 JSON */
     if (!root) {                                            /* 解析失败（截断/非 JSON） */
@@ -240,6 +245,7 @@ static void parse_result_json(const char *json, size_t json_len)
         xEventGroupSetBits(s_iat.evt, EVT_DONE);            /* 唤醒等待识别结果的调用方 */
     }
     cJSON_Delete(root);                                     /* 释放 JSON 树 */
+    free(tmp);                                              /* 释放解析副本 */
 }
 
 /**
@@ -348,6 +354,8 @@ esp_err_t xfyun_iat_recognize(const char *pcm_mono, size_t len, char **text_out)
         .buffer_size = 4096,                            /* 接收缓冲（结果 JSON 远小于此） */
         .network_timeout_ms = 10000,                    /* 网络超时 10s */
         .crt_bundle_attach = esp_crt_bundle_attach,     /* wss 证书校验（同 HTTPS 教训：不挂必被拒） */
+        .task_stack = 8 * 1024,                         /* 组件默认栈仅 4KB——结果解析回调在其
+                                                         * 任务里跑，曾触发栈保护崩机（M4 实测） */
     };
     esp_websocket_client_handle_t ws = esp_websocket_client_init(&cfg); /* 创建 WS 客户端实例 */
     ESP_RETURN_ON_FALSE(ws, ESP_FAIL, TAG, "ws init failed");   /* 创建失败即返回 */
