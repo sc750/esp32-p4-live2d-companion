@@ -416,7 +416,10 @@ esp_err_t xfyun_iat_recognize(const char *pcm_mono, size_t len, char **text_out)
             break;                                      /* 中断上传循环 */
         }
         off += chunk;                                   /* 偏移推进 */
-        vTaskDelay(pdMS_TO_TICKS(40));                  /* 协议建议的 40ms 帧间隔 */
+        vTaskDelay(pdMS_TO_TICKS(10));                  /* 帧间隔 10ms（协议建议 40ms 模拟实时；
+                                                         * 整段模式下 40ms 会让 ASR 耗时≈音频时长。
+                                                         * M5 实测 10ms=4 倍速，识别无劣化；
+                                                         * 若出现识别错误可回退 40ms） */
     }
     /* 注：最后一帧已在循环里以 status=2 发出（off+chunk>=len 判定），无需补空末帧 */
 
