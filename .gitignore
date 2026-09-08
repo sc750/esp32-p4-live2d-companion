@@ -80,9 +80,17 @@ Desktop.ini
 # AI API keys —— 真实 key 只存本地，严禁入库（入库存占位符模板）
 docs/key与说明文档.md
 
-# 测试残留日志
-m0_*.log
-m0_*.txt
+# 测试残留日志/数据（根目录一次性诊断产物，测完即删）
+/m*_*.log
+/m*_*.txt
+/reg_*.log
+/reg_*.txt
+/full_boot.txt
+/app_boot.txt
+/font_check.txt
+/expr_preview.png
+/rig_idle_*.png
+/base_check.png
 
 # Codex 实验构建树
 build_*/
@@ -90,3 +98,4 @@ build_*/
 # 编辑器/工具备份文件
 *.pre_refactor
 *.bak
+/ws_pc_test.txt
