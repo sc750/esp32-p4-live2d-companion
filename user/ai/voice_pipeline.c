@@ -291,6 +291,10 @@ static void tts_stream_task(void *arg)
 /** 录到 stop 事件或 ms 上限；返回时录音已结束 */
 static void rec_until_stop_or(uint32_t max_ms)
 {
+    /* 清掉残留的松开沿：上一轮"按下时 WiFi 未连接被拒"的场景里，
+     * 松手沿（STOP 位）置位后无人消费——不清除会让下一轮录音
+     * 刚 begin 就"秒松手"，只录到 100ms 静音（M5 用户实测 bug） */
+    xEventGroupClearBits(s_vp.evt, EVT_HOLD_STOP);
     voice_rec_begin();                                  /* 录音器复位并开始 */
     ui_state(DIALOG_STATE_LISTENING);                   /* 蓝点亮起（听） */
     ui_text("在听呢……（说完松手）");                     /* 字幕提示用户 */
