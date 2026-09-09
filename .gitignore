@@ -99,3 +99,5 @@ build_*/
 *.pre_refactor
 *.bak
 /ws_pc_test.txt
+/bridge_result.txt
+/diag_result.txt
