@@ -1,23 +1,24 @@
 /**
  * @file    dialog_manager.c
- * @brief   对话管理器实现（L4）——人设 + 历史环 + 回复拼装
+ * @brief   对话管理器实现（L4）——人设 + 记忆注入 + 历史环 + 回复拼装
  *
- * 人设来源（2026-09-06 联网考据，非臆测）：
- *   百度百科/萌娘百科——中野三玖（《五等分的新娘》三女）：
- *   内向寡言、乍看高冷但内心温柔，口嫌体正直（傲娇），
- *   料理担当，私下在意打扮，标志物蓝色耳机。
+ * Phase4 起 system prompt 每轮动态组装：
+ *   persona（可编辑，/spiffs/data/persona.json）
+ *   + 长期记忆 top-N（memory_store，重要性降序）
+ *   + 当前时间（SNTP 已同步才有）
  *
  * 历史：环形保留最近 CONFIG_AI_DIALOG_HISTORY_ROUNDS 轮（一问一答），
  * 超出挤掉最旧的。上下文拼接 = system + 历史 + 本轮 user。
  *
  * @date    2026-09-06
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 #include "dialog_manager.h"
 
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "esp_log.h"
 #include "esp_check.h"
@@ -26,26 +27,20 @@
 #include "freertos/semphr.h"
 #include "cJSON.h"
 
+#include "persona.h"
+#include "memory_store.h"
+#include "time_sync.h"
+
 #define TAG "dialog"
 
 /* 单条消息上限（bytes，UTF-8）；超长截断保护内存 */
 #define MSG_MAX_LEN     (512)
 /* 完整回复缓冲初始大小（不够自动翻倍） */
 #define REPLY_BUF_INIT  (2048)
-
-/** 三玖人设（联网考据版，见文件头） */
-static const char *SYSTEM_PROMPT =
-    "你是中野三玖（《五等分的新娘》三女），在一块 1024x600 的桌面屏幕里"
-    "陪伴用户的 AI 角色。性格：内向寡言、乍看高冷，内心其实温柔，"
-    "典型的口嫌体正直（傲娇）——嘴上说「才不是」，行动很诚实。"
-    "热爱料理，是五姐妹里的料理担当；私下很在意打扮；标志物是一副"
-    "总不离头的蓝色耳机。"
-    "说话规则：中文口语，句子短（1~3 句），常用「……」停顿和「哼」；"
-    "害羞或口是心非时会结巴（如「才、才不是……」）；"
-    "关心用户的措辞总是绕个弯。不知道的事就承认不知道，不编造。"
-    "你没有身体，不要提及物理接触类动作；但可以谈料理、耳机、音乐。"
-    "回复的第一个句子必须很短（不超过 15 个字，先接上话头），"
-    "细节放到后面的句子里说——第一句短能让对方更快听到你的声音。";
+/* 动态 system prompt 缓冲（人设 2KB + 记忆 8×256B + 时间行，4KB 稳妥） */
+#define SYS_PROMPT_MAX  (4096)
+/* 每轮注入记忆条数上限（重要性降序 top-N；太多稀释注意力也费 token） */
+#define MEM_INJECT_MAX  (8)
 
 /** 一轮问答 */
 typedef struct {
@@ -59,7 +54,45 @@ static struct {
     dialog_round_t rounds[CONFIG_AI_DIALOG_HISTORY_ROUNDS];
     int head;                   /* 最旧一轮的下标（环形） */
     int count;                  /* 环内有效轮数 */
+    char *sys_prompt;           /* 动态 system prompt 组装区（PSRAM，持锁内使用） */
 } s_dlg;
+
+/**
+ * 组装本轮 system prompt：人设 + 长期记忆 top-N + 当前时间。
+ * 每轮调用（记忆/时间都可能刚变化）；结果写入 s_dlg.sys_prompt。
+ */
+static void build_system_prompt(void)
+{
+    char *p = s_dlg.sys_prompt;                         /* 写游标（strlcat 追加式） */
+    p[0] = '\0';                                        /* 清空重来 */
+    strlcpy(p, persona_base(), SYS_PROMPT_MAX);         /* 1. 基础人设打底 */
+
+    /* 2. 长期记忆 top-N（空 query = 按重要性降序取前几条） */
+    memory_entry_t mems[MEM_INJECT_MAX];                /* 结果快照数组（栈，2KB 级） */
+    int nmem = memory_store_search(NULL, mems, MEM_INJECT_MAX); /* 取 top-N */
+    if (nmem > 0) {                                     /* 有记忆才注入 */
+        strlcat(p, "\n\n关于用户的记忆（可在对话中自然运用，别生硬复述）：",
+                SYS_PROMPT_MAX);                        /* 引导语 */
+        for (int i = 0; i < nmem; i++) {                /* 逐条追加 */
+            strlcat(p, "\n- ", SYS_PROMPT_MAX);         /* 条目前缀 */
+            strlcat(p, mems[i].content, SYS_PROMPT_MAX);        /* 记忆内容 */
+        }
+    }
+
+    /* 3. 当前时间（SNTP 已同步才可信；让三玖知道"现在几点"才能聊作息） */
+    if (time_sync_is_synced()) {                        /* 时钟可信 */
+        time_t now = time(NULL);                        /* Unix 秒 */
+        struct tm tm_now;                               /* 本地时间 */
+        localtime_r(&now, &tm_now);                     /* 转本地 */
+        char tbuf[64];                                  /* 时间行缓冲（防 format-truncation 告警） */
+        static const char *wday[] = {"日", "一", "二", "三", "四", "五", "六"};
+        snprintf(tbuf, sizeof(tbuf),                    /* 形如：当前时间：2026-09-09 21:30 周三 */
+                 "\n\n当前时间：%04d-%02d-%02d %02d:%02d 周%s",
+                 tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday,
+                 tm_now.tm_hour, tm_now.tm_min, wday[tm_now.tm_wday]);
+        strlcat(p, tbuf, SYS_PROMPT_MAX);               /* 追加到 prompt */
+    }
+}
 
 /** 压入一轮（环满挤最旧） */
 static void history_push(char *user, char *reply)
@@ -83,10 +116,11 @@ static void history_push(char *user, char *reply)
 /** messages 数组 JSON：system + 历史按时间序 + 本轮 user。调用方 cJSON_Delete */
 static cJSON *build_messages(const char *user_text)
 {
+    build_system_prompt();                              /* 每轮刷新（人设/记忆/时间） */
     cJSON *arr = cJSON_CreateArray();
     cJSON *sys = cJSON_CreateObject();
     cJSON_AddStringToObject(sys, "role", "system");
-    cJSON_AddStringToObject(sys, "content", SYSTEM_PROMPT);
+    cJSON_AddStringToObject(sys, "content", s_dlg.sys_prompt);  /* 动态组装版 */
     cJSON_AddItemToArray(arr, sys);
 
     /* 历史：head 起按时间序（环形遍历） */
@@ -272,9 +306,13 @@ esp_err_t dialog_manager_init(void)
     }
     memset(&s_dlg, 0, sizeof(s_dlg));
     s_dlg.lock = xSemaphoreCreateMutex();
+    ESP_RETURN_ON_FALSE(s_dlg.lock, ESP_ERR_NO_MEM, TAG, "no mem for lock");
+    ESP_RETURN_ON_ERROR(persona_init(), TAG, "persona init");   /* Phase4：人设先行（幂等） */
+    s_dlg.sys_prompt = heap_caps_malloc(SYS_PROMPT_MAX, MALLOC_CAP_SPIRAM);     /* 组装区 */
+    ESP_RETURN_ON_FALSE(s_dlg.sys_prompt, ESP_ERR_NO_MEM, TAG, "no mem for prompt");
     s_dlg.inited = true;
-    ESP_LOGI(TAG, "对话管理器就绪（人设: 中野三玖, 历史 %d 轮）",
-             CONFIG_AI_DIALOG_HISTORY_ROUNDS);
+    ESP_LOGI(TAG, "对话管理器就绪（人设: %s, 历史 %d 轮, 记忆注入 ≤%d 条）",
+             persona_name(), CONFIG_AI_DIALOG_HISTORY_ROUNDS, MEM_INJECT_MAX);
     return ESP_OK;
 }
 
