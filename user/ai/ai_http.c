@@ -163,6 +163,8 @@ esp_err_t ai_http_post_json(const char *url, const char *api_key,
     resp_buf[n] = '\0';
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
+    ESP_LOGI(TAG, "POST 响应: HTTP %d, 收 %uB",      /* 诊断：定位 200+空 body 场景 */
+             status, (unsigned)n);
     if (r < 0) {
         ESP_LOGW(TAG, "读响应中断");
         return ESP_ERR_TIMEOUT;

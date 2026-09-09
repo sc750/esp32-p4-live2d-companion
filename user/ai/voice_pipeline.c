@@ -133,7 +133,13 @@ static void on_reply_token(const char *text, void *ctx)
 static void on_reply_sentence(const char *sentence, void *ctx)
 {
     (void)ctx;                                          /* 未使用上下文 */
-    if (!sentence[0] || !s_tts_queue) {                 /* 空句或管线未初始化 */
+    /* 空句/纯空白句过滤：空白句进了 TTS 队列会触发 "text cannot be
+     * empty" 的无效调用（M6 实测），且没有任何播报价值 */
+    const char *p = sentence;                           /* 扫描指针 */
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {       /* 跳过前导空白 */
+        p++;                                            /* 前进 */
+    }
+    if (p[0] == '\0' || !s_tts_queue) {                 /* 全空白或管线未初始化 */
         return;                                         /* 直接忽略 */
     }
     /* M3 延迟量化：LLM 首句耗时（只记一次） */

@@ -123,6 +123,51 @@ typedef struct {
 static char *dialog_ask_locked(const char *user_text, llm_token_cb_t on_token,
                                dialog_sentence_cb_t on_sentence, void *ctx);
 
+/**
+ * 原地 UTF-8 消毒：只保留合法序列（含 ASCII），非法字节剔除。
+ * 教训（M6）：Xunfei WS 结果 JSON 若被分帧截断，拼出的文本可能含
+ * 破碎 UTF-8——存进历史后每次 LLM 请求都被 DeepSeek 以
+ * "invalid unicode code point" 400 拒绝，且历史是环形的会持续投毒。
+ */
+static void utf8_sanitize(char *s)
+{
+    size_t r = 0, w = 0;                                /* 读/写游标 */
+    while (s[r] != '\0') {                              /* 逐字节扫描 */
+        unsigned char c = (unsigned char)s[r];          /* 取首字节判断序列长度 */
+        size_t need;                                    /* 该序列应有总长 */
+        if (c < 0x80) {                                 /* ASCII */
+            need = 1;                                   /* 单字节 */
+        } else if ((c & 0xE0) == 0xC0 && c >= 0xC2) {   /* 2 字节序列首字节 */
+            need = 2;                                   /* 双字节 */
+        } else if ((c & 0xF0) == 0xE0) {                /* 3 字节序列首字节 */
+            need = 3;                                   /* 三字节 */
+        } else if ((c & 0xF8) == 0xF0 && c <= 0xF4) {   /* 4 字节序列首字节 */
+            need = 4;                                   /* 四字节 */
+        } else {                                        /* 非法首字节 */
+            r++;                                        /* 跳过这一个坏字节 */
+            continue;                                   /* 继续扫描 */
+        }
+        /* 校验续字节（必须都是 10xxxxxx）且不越界 */
+        bool ok = (r + need <= strlen(s));              /* 先看长度是否越界 */
+        for (size_t k = 1; ok && k < need; k++) {       /* 逐个检查续字节 */
+            if (((unsigned char)s[r + k] & 0xC0) != 0x80) {     /* 非法续字节 */
+                ok = false;                             /* 标记无效 */
+            }
+        }
+        if (!ok) {                                      /* 序列残缺 */
+            r++;                                        /* 跳过坏首字节 */
+            continue;                                   /* 继续扫描 */
+        }
+        memmove(s + w, s + r, need);                    /* 合法序列搬到写入位 */
+        w += need;                                      /* 写游标前进 */
+        r += need;                                      /* 读游标前进 */
+    }
+    s[w] = '\0';                                        /* 补字符串结尾 */
+}
+
+static char *dialog_ask_locked(const char *user_text, llm_token_cb_t on_token,
+                               dialog_sentence_cb_t on_sentence, void *ctx);
+
 static bool is_sentence_end(const char *text, size_t remain, size_t *width)
 {
     if (text[0] == '.' || text[0] == '!' || text[0] == '?' || text[0] == '\n') {
@@ -263,6 +308,7 @@ static char *dialog_ask_locked(const char *user_text, llm_token_cb_t on_token,
     char *user_copy = heap_caps_malloc(MSG_MAX_LEN, MALLOC_CAP_SPIRAM);
     ESP_RETURN_ON_FALSE(user_copy, NULL, TAG, "no mem");
     strlcpy(user_copy, user_text, MSG_MAX_LEN);
+    utf8_sanitize(user_copy);                       /* M6：剥离非法 UTF-8（防 DeepSeek 400） */
 
     /* 组 messages → 交给 LLM */
     cJSON *msgs = build_messages(user_copy);
@@ -307,10 +353,12 @@ static char *dialog_ask_locked(const char *user_text, llm_token_cb_t on_token,
         return NULL;
     }
 
-    /* 复制出精确大小的完整回复返回调用方；原件进历史 */
+    /* 复制出精确大小的完整回复返回调用方；原件消毒后进历史 */
     char *reply = heap_caps_malloc(acc.len + 1, MALLOC_CAP_SPIRAM);
     if (reply) {
         memcpy(reply, acc.buf, acc.len + 1);
+        utf8_sanitize(reply);                   /* M6：回复也消毒（LLM 理论上输出合法
+                                                 * UTF-8，但分帧拼装的边角不可信） */
     }
     free(acc.buf);
 

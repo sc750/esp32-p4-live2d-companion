@@ -11,3 +11,6 @@
 | M4 | 讯飞流式听写适配层：xfyun_iat.c（hmac-sha256 URL 鉴权 + WS 帧协议 1280B/40ms + 结果追加拼接，官方文档逐条核对）+ esp_websocket_client 托管组件 + Kconfig 三凭据 + asr_client 运行时后端选择（讯飞失败自动回退 MiMo）| 编译零错烧录通过；看门狗 0/系统就绪/讯飞模块加载 ✓；待 key 联调 | ✅ 代码就绪等 key | - |
 | M4b | 讯飞链路三连修 + 实测打通：①事件注册改私有循环（esp_websocket_register_events，默认循环收不到事件）②wss 挂 crt_bundle（同 HTTPS 教训）③组件任务栈 4KB→8KB+解析副本走堆（2KB 栈副本+cJSON 触发栈保护崩机）④时钟健全性检查（SNTP 未同步直接回退不浪费 8s 超时）。实测：鉴权通过/识别两轮全对（你好呀/你那边天气怎么样）/无崩机/ASR 5.1s | 用户实测识别准确、无崩机、TTS 播放正常 | ✅ 讯飞流式 ASR 全链路打通 | - |
 | M5 | ASR 帧间隔 40ms→10ms（4 倍速上传，发送段 2.3s→0.6s 不再是瓶颈）；实测识别无劣化（你好呀，今天天气怎么样？全对）；LLM 首句 1.9s 稳定；按句预取 underflows=0。ASR 总耗时 11s 受手机热点弱网拖累（环境变量），稳定网络下预期 2~3s | 识别无劣化 + 发送段不再主导延迟 | ✅ 实测通过 | - |
+| M6 | MiniMax T2A v2 TTS 后端：minimax_tts.c（Bearer 鉴权 + hex 解码 PCM + 24k/mono/pcm 直出）+ tts_client 双后端选择（MiniMax key 已配，MiMo 自动回退）+ Kconfig 四项（key/url/model/voice=female-shaonv 少女音）。官方 OpenAPI 逐条核对；口型驱动已在播放器侧，后端可插拔 | 编译零错烧录通过（板子待实测） | ✅ 代码就绪 | - |
+| M6b | MiniMax 实测打通 + 两个关键修复：①CONFIG_SPIRAM_USE_MALLOC（cJSON 解析 720KB 响应时内部堆只 280KB 分配失败——>16KB 大分配路由 PSRAM）②minimax 解析副本 free 顺序修（日志在 free 后读 UAF 打出空）| MiniMax 实测：HTTP 200 + 737KB 响应 + 184182 样本 PCM 合成成功 | ✅ 全链路打通 | - |
+| M6c | 用户 BUG 修复：无网时按住说话被拒 → 松手沿残留 → 有网后再按录音秒结束只录 100ms → rec_until_stop_or 开头清残留 STOP 位 | 无网按下→有网后正常对话 | ✅ 修复提交 2e01371 | 2e01371 |

@@ -124,10 +124,17 @@ esp_err_t minimax_tts_synthesize(const char *text,
         return err;                                         /* 返回网络错误 */
     }
 
-    /* ---- 3. 解析响应：data.audio（hex）+ base_resp.status_code ---- */
+    /* ---- 3. 解析响应：data.audio（hex）+ base_resp.status_code ----
+     * free(resp) 必须放在所有诊断日志之后（use-after-free 会让日志读到空） */
     cJSON *root = cJSON_Parse(resp);                        /* 解析响应 JSON */
-    free(resp);                                             /* 响应缓冲用完释放 */
-    ESP_RETURN_ON_FALSE(root, ESP_ERR_INVALID_STATE, TAG, "响应非 JSON");
+    if (!root) {                                            /* 解析失败：打印长度+头部定位 */
+        ESP_LOGE(TAG, "响应非 JSON（共 %uKB）头 64B: %.64s",         /* 长度可判断截断，       */
+                 (unsigned)(strlen(resp) / 1024), resp);    /* 头部可判断错误页/gzip */
+        free(resp);                                         /* 释放后返回 */
+        return ESP_ERR_INVALID_STATE;                       /* 返回数据错误 */
+    }
+    free(resp);                                             /* 解析成功，缓冲用完释放 */
+    resp = NULL;                                            /* 防止后续误用 */
 
     cJSON *base_resp = cJSON_GetObjectItem(root, "base_resp");      /* 业务状态对象 */
     cJSON *jcode = base_resp ? cJSON_GetObjectItem(base_resp, "status_code") : NULL;
