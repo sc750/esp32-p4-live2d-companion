@@ -25,6 +25,7 @@
 #include "cJSON.h"          /* SSE 行 JSON 解析 */
 
 #include "ai_http.h"        /* HTTP POST + SSE 流式封装 */
+#include "minimax_tts.h"    /* MiniMax T2A 后端（M6） */
 
 #define TAG "tts"           /* 本模块日志标签 */
 
@@ -64,6 +65,7 @@ esp_err_t tts_client_init(void)
     strlcpy(s_tts.key, CONFIG_AI_MIMO_KEY, sizeof(s_tts.key));  /* 载入 MiMo API Key */
     s_tts.inited = true;                                    /* 置就绪标志 */
     ESP_LOGI(TAG, "TTS 就绪: %s (model=mimo-v2.5-tts, voice=冰糖)", s_tts.url); /* 打印后端信息 */
+    minimax_tts_init();                                     /* 顺带初始化 MiniMax 后端（M6） */
     return ESP_OK;                                          /* 初始化成功 */
 }
 
@@ -126,6 +128,23 @@ esp_err_t tts_synthesize(const char *text, const char *style,   /* 文本与风�
     /* 参数校验：已初始化、文本非空 */
     ESP_RETURN_ON_FALSE(s_tts.inited && text && text[0],
                         ESP_ERR_INVALID_ARG, TAG, "bad arg");
+
+    /* ---- 后端选择（M6）：MiniMax key 已配置 → 走 T2A v2（24k pcm 直出）；
+     * 否则走 MiMo 伪流式（chat.completions + SSE hex 块）。
+     * 注：MiniMax 无自然语言 style 字段，style 仅 MiMo 路径生效。 ---- */
+    if (minimax_tts_configured()) {                         /* MiniMax key 已配置 */
+        int16_t *pcm = NULL;                                /* 整段 PCM 输出 */
+        size_t samples = 0;                                 /* 样本数 */
+        esp_err_t merr = minimax_tts_synthesize(text, &pcm, &samples);      /* 整段合成 */
+        if (merr == ESP_OK) {                               /* 合成成功 */
+            if (on_audio) {                                 /* 有回调才分发 */
+                on_audio(pcm, samples, ctx);                /* 整段一次回调（含重采样入 ring） */
+            }
+            free(pcm);                                      /* 回调完释放（播放器从 ring 读） */
+            return ESP_OK;                                  /* 成功返回 */
+        }
+        ESP_LOGW(TAG, "MiniMax 合成失败(%s)，回退 MiMo", esp_err_to_name(merr));     /* 记录回退 */
+    }
 
     /* 手工组包（文本含中文/引号 → cJSON 只负责字符串转义再拼进模板） */
     cJSON *jtext = cJSON_CreateString(text);                /* 把文本包成 JSON 字符串节点 */

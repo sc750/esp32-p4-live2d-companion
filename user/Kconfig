@@ -20,6 +20,22 @@ menu "AI 对话服务配置（phase3）"
         string "小米 MiMo API Key"
         default "REDACTED_MIMO_KEY"
 
+    config AI_TTS_MINIMAX_KEY
+        string "MiniMax TTS API Key（非空则 TTS 走 MiniMax，否则用 MiMo）"
+        default "REDACTED_MINIMAX_KEY"
+
+    config AI_TTS_MINIMAX_URL
+        string "MiniMax T2A v2 端点"
+        default "https://api.minimaxi.com/v1/t2a_v2"
+
+    config AI_TTS_MINIMAX_MODEL
+        string "MiniMax TTS 模型（2.6-turbo 低延迟 / 2.8-hd 高音质）"
+        default "speech-2.6-turbo"
+
+    config AI_TTS_MINIMAX_VOICE
+        string "MiniMax 音色 ID（中文女声）"
+        default "female-shaonv"
+
     config ASR_XFYUN_APPID
         string "讯飞 APPID（非空则 ASR 走讯飞流式听写，否则用 MiMo）"
         default "REDACTED_XFYUN_APPID"
