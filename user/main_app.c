@@ -22,6 +22,7 @@
 #include "ui_bridge.h"
 #include "time_sync.h"
 #include "dialog_manager.h"
+#include "memory_store.h"
 #include "chat_console.h"
 #include "voice_pipeline.h"
 #include "esp_timer.h"
@@ -189,6 +190,7 @@ void user_app_run(void)
     ui_bridge_set_time("--:--", false);     /* 开机未校时：灰色占位 */
 
     /* 4c. AI 对话链路（Phase 3）：LLM + 人设 + 串口输入 + 语音管线 */
+    ESP_ERROR_CHECK(memory_store_init());       /* Phase4：长期记忆先就位（读回 SPIFFS） */
     ESP_ERROR_CHECK(dialog_manager_init());
     ESP_ERROR_CHECK(llm_client_init());
     ESP_ERROR_CHECK(voice_pipeline_init());
