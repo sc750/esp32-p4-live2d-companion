@@ -10,3 +10,6 @@ finish-work: phase2-ui-home-polish 收官——对话=主页状态层(Chat页拆
 
 ## #4  task=phase3语音对话mvp-录音asr-llm-tts播放最小链路  phase=EXECUTE
 break-loop: 三玖膝盖截断=push() region 语义错(PIL crop box 当 xywh 解)+body 下界公式错,双重负负得正骗过 verify(atlas_h 碰巧等于正确值,内容只有192/336行);修复=push 语义理正+下界改H;防复发=rigpack pack() 末尾 selfcheck_body_reach 机械自检(body 内容必须触达 canvas 底部)已实现+promote conventions
+
+## #5  task=phase3语音对话mvp-录音asr-llm-tts播放最小链路  phase=EXECUTE
+break-loop: Phase3 语音收官八坑复盘——①esp_websocket_client 私有事件循环（注册到默认循环永远收不到）②wss 每组件独立挂 crt_bundle ③组件默认栈 4KB 爆栈（task_stack 8KB + 解析副本走堆）④CONFIG_SPIRAM_USE_MALLOC 未启用（cJSON 720KB 响应内部堆放不下）⑤MiniMax hex≠base64 ⑥空白句穿透 ⑦事件组残留松手沿 ⑧USB 接触不良掉枚举。前三条+④已 promote 到 spec/conventions；机械门禁超时 120→300s + VENDOR_DIRS build_* 通配
