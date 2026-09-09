@@ -72,6 +72,8 @@ function Test-VendorPath([string]$relPath) {
         $esc = [regex]::Escape($d)
         if ($np -match "(^|/)$esc/") { return $true }
     }
+    # build_* 通配：实验构建树变体（build_tts/build_xz_rt3 等）
+    if ($np -match '(^|/)build_[^/]*($|/)') { return $true }
     return $false
 }
 

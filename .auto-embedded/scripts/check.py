@@ -53,7 +53,7 @@ def run_arch(root: Path) -> tuple[int, list]:
         return 0, ["[SKIP] 未找到 PowerShell/bash，跳过分层门禁（装 PowerShell 或 bash 后可用）"]
     try:
         r = subprocess.run(order[0], cwd=str(root), capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=120)
+                           encoding="utf-8", errors="replace", timeout=300)
     except Exception as e:  # noqa: BLE001
         return 1, [f"[ARCH-ERR] arch-check 执行失败: {e}"]
     lines = [ln for ln in (r.stdout or "").splitlines() if ln.strip()]
