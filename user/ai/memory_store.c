@@ -277,6 +277,23 @@ esp_err_t memory_store_delete(uint32_t id)
     return err;                                         /* 返回结果 */
 }
 
+esp_err_t memory_store_clear(void)
+{
+    if (!s_mem.inited) {                                /* 未初始化 */
+        return ESP_ERR_INVALID_STATE;                   /* 拒绝 */
+    }
+    if (xSemaphoreTake(s_mem.lock, pdMS_TO_TICKS(3000)) != pdTRUE) {    /* 抢锁 */
+        return ESP_ERR_TIMEOUT;                         /* 超时放弃 */
+    }
+    int n = s_mem.count;                                /* 记下清掉多少（日志用） */
+    s_mem.count = 0;                                    /* 条目数清零（数组不必擦） */
+    s_mem.next_id = 1;                                  /* ID 游标归位 */
+    esp_err_t err = save_locked();                      /* 空库落盘 */
+    xSemaphoreGive(s_mem.lock);                         /* 还锁 */
+    ESP_LOGI(TAG, "记忆清空（%d 条）", n);              /* 日志 */
+    return err;                                         /* 返回结果 */
+}
+
 /** 搜索结果排序比较器：重要性降序 */
 static int cmp_by_importance(const void *a, const void *b)
 {

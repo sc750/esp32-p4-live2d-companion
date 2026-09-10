@@ -28,6 +28,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "memory_store.h"
+
 #define TAG "chat_con"
 
 #define LINE_MAX    (512)
@@ -36,9 +38,80 @@
 static chat_line_cb_t s_cb;
 static void *s_ctx;
 
+/** 串口输出一行（统一出口，省得每处写 usb_serial_jtag_write_bytes） */
+static void say(const char *s)
+{
+    usb_serial_jtag_write_bytes(s, strlen(s), portMAX_DELAY);       /* 阻塞写全 */
+}
+
+/** "mem" 命令族：list / add <内容> / del <id> / clear */
+static void exec_mem_cmd(char *rest)
+{
+    char what[16] = {0};                                /* 子命令缓冲 */
+    rest += strspn(rest, " ");                          /* 剥前导空格 */
+    int n = sscanf(rest, "%15s", what);                 /* 取子命令词 */
+    if (n != 1) {                                       /* 裸 "mem"：帮助 */
+        say("用法: mem list | mem add <内容> | mem del <id> | mem clear\r\n");
+        return;                                         /* 结束 */
+    }
+    if (strcmp(what, "list") == 0) {                    /* 列出全部 */
+        memory_entry_t out[32];                         /* 单页最多 32 条 */
+        int cnt = memory_store_search(NULL, out, 32);   /* 空 query = 重要性降序 */
+        char line[400];                                 /* 行拼装缓冲 */
+        snprintf(line, sizeof(line), "共 %d 条记忆:\r\n", memory_store_count());
+        say(line);                                      /* 总数行 */
+        for (int i = 0; i < cnt; i++) {                 /* 逐条打印 */
+            snprintf(line, sizeof(line), "#%u [%s] %s\r\n",
+                     (unsigned)out[i].id, memory_type_name(out[i].type),
+                     out[i].content);                   /* id [类型] 内容 */
+            say(line);                                  /* 输出 */
+        }
+        return;                                         /* 结束 */
+    }
+    if (strcmp(what, "add") == 0) {                     /* 手动添加 */
+        char *body = rest + strlen(what);               /* 跳过子命令词 */
+        body += strspn(body, " ");                      /* 剥空格 */
+        if (!*body) {                                   /* 没内容 */
+            say("用法: mem add <内容>\r\n");            /* 提示 */
+            return;                                     /* 结束 */
+        }
+        uint32_t id = 0;                                /* 新条目 ID */
+        memory_store_add(MEM_TYPE_FACT, body, 5, &id);  /* 事实类、重要性 5 */
+        char line[64];                                  /* 回执行 */
+        snprintf(line, sizeof(line), "已记住 (#%u)\r\n", (unsigned)id);
+        say(line);                                      /* 回执 */
+        return;                                         /* 结束 */
+    }
+    if (strcmp(what, "del") == 0) {                     /* 按 ID 删 */
+        unsigned id = 0;                                /* 目标 ID */
+        if (sscanf(rest + strlen(what), " %u", &id) != 1) {     /* 取 ID */
+            say("用法: mem del <id>\r\n");              /* 没给 ID */
+            return;                                     /* 结束 */
+        }
+        esp_err_t e = memory_store_delete(id);          /* 执行删除 */
+        say(e == ESP_OK ? "已删除\r\n" : "无此 ID\r\n");        /* 回执 */
+        return;                                         /* 结束 */
+    }
+    if (strcmp(what, "clear") == 0) {                   /* 清空 */
+        memory_store_clear();                           /* 清库落盘 */
+        say("记忆已清空\r\n");                          /* 回执 */
+        return;                                         /* 结束 */
+    }
+    say("未知子命令。用法: mem list | mem add <内容> | mem del <id> | mem clear\r\n");
+}
+
 /** 一行到手（已剥行尾、非空） */
 static void dispatch_line(char *line, size_t len)
 {
+    /* 命令路由："mem " 进记忆命令族（不进对话） */
+    if (len >= 4 && strncmp(line, "mem ", 4) == 0) {
+        exec_mem_cmd(line + 4);                         /* 交给 mem 处理器 */
+        return;                                         /* 命令不说话 */
+    }
+    if (len == 3 && strncmp(line, "mem", 3) == 0) {     /* 裸 "mem" 也给帮助 */
+        exec_mem_cmd("");                               /* 空参数触发用法 */
+        return;                                         /* 结束 */
+    }
     /* 剥 "chat " 前缀（可剥可不剥，少打字） */
     if (len >= 5 && strncmp(line, "chat ", 5) == 0) {
         memmove(line, line + 5, len - 5);

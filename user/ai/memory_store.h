@@ -70,6 +70,9 @@ esp_err_t memory_store_add(memory_type_t type, const char *content,
 /** 按 ID 删除一条（ESP_ERR_NOT_FOUND = 无此 ID） */
 esp_err_t memory_store_delete(uint32_t id);
 
+/** 清空全部记忆并落盘（串口调试/恢复出厂用） */
+esp_err_t memory_store_clear(void);
+
 /**
  * @brief 关键词搜索（子串匹配；空/NULL query 返回按重要性降序的前 max 条）
  *
