@@ -248,6 +248,9 @@ esp_err_t memory_store_add(memory_type_t type, const char *content,
     e->importance = importance;                         /* 重要性 */
     e->created_at = now_sec();                          /* 时间戳 */
     s_mem.count++;                                      /* 条数 +1 */
+    if (out_id) {                                       /* 调用方要 ID 才回填 */
+        *out_id = e->id;                                /* 回填新条目 ID（曾漏此步 → 串口回执恒 #0） */
+    }
     err = save_locked();                                /* 即刻落盘 */
     xSemaphoreGive(s_mem.lock);                         /* 还锁 */
     ESP_LOGI(TAG, "记忆入库 #%u [%s] %s",

@@ -192,7 +192,7 @@ static esp_err_t build_prompt(char **user_out)
     snprintf(u, DIARY_PROMPT_MAX,                           /* 头部：日期+轮数 */
              "今天是%s %s。今天我们聊了 %d 轮。\n",
              date, weekday, s_dia.today_rounds);
-    memory_entry_t mems[MEM_FOR_DIARY];                     /* 记忆素材 */
+    static memory_entry_t mems[MEM_FOR_DIARY];              /* 记忆素材（static：1.6KB 不进栈） */
     int nmem = memory_store_search(NULL, mems, MEM_FOR_DIARY);      /* top-N */
     if (nmem > 0) {                                         /* 有记忆才追加 */
         strlcat(u, "关于用户你还记得这些：\n", DIARY_PROMPT_MAX);   /* 引导语 */

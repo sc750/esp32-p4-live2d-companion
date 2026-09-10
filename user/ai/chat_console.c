@@ -24,6 +24,7 @@
 
 #include "esp_log.h"
 #include "esp_check.h"
+#include "esp_heap_caps.h"
 #include "driver/usb_serial_jtag.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -35,7 +36,9 @@
 #define TAG "chat_con"
 
 #define LINE_MAX    (512)
-#define TASK_STACK  (8 * 1024)      /* 行缓冲 + 下游对话调用栈余量 */
+/* 任务栈：行缓冲 + 下游对话调用 + diary 命令的 diary_entry_t(≈2KB) 余量。
+ * MVP 教训：此栈上曾放 8.7KB 快照数组 → 栈溢出 panic，故一律堆分配 + 留足栈。 */
+#define TASK_STACK  (12 * 1024)
 
 static chat_line_cb_t s_cb;
 static void *s_ctx;
@@ -57,15 +60,26 @@ static void exec_mem_cmd(char *rest)
         return;                                         /* 结束 */
     }
     if (strcmp(what, "list") == 0) {                    /* 列出全部 */
-        memory_entry_t out[32];                         /* 单页最多 32 条 */
-        int cnt = memory_store_search(NULL, out, 32);   /* 空 query = 重要性降序 */
+        /* 快照数组走 PSRAM 堆（200×272B≈54KB）——绝不能放栈上：
+         * 曾用 memory_entry_t out[32] 放栈（≈8.7KB）直接压爆 8KB 任务栈，
+         * 表现为执行 mem list 即 Guru Meditation Stack protection fault。 */
+        static memory_entry_t *snap = NULL;             /* 惰性分配的快照区 */
+        if (!snap) {                                    /* 首次使用才分配 */
+            snap = heap_caps_malloc(MEM_MAX_ENTRIES * sizeof(memory_entry_t),
+                                    MALLOC_CAP_SPIRAM);
+            if (!snap) {                                /* 分配失败 */
+                say("内存不足，无法列出\r\n");          /* 提示 */
+                return;                                 /* 结束 */
+            }
+        }
+        int cnt = memory_store_search(NULL, snap, MEM_MAX_ENTRIES);     /* 空 query = 重要性降序 */
         char line[400];                                 /* 行拼装缓冲 */
         snprintf(line, sizeof(line), "共 %d 条记忆:\r\n", memory_store_count());
         say(line);                                      /* 总数行 */
         for (int i = 0; i < cnt; i++) {                 /* 逐条打印 */
             snprintf(line, sizeof(line), "#%u [%s] %s\r\n",
-                     (unsigned)out[i].id, memory_type_name(out[i].type),
-                     out[i].content);                   /* id [类型] 内容 */
+                     (unsigned)snap[i].id, memory_type_name(snap[i].type),
+                     snap[i].content);                  /* id [类型] 内容 */
             say(line);                                  /* 输出 */
         }
         return;                                         /* 结束 */
@@ -115,7 +129,7 @@ static void exec_diary_cmd(char *rest)
         say("正在生成今日日记（数秒）……\r\n");          /* 提示耗时 */
         esp_err_t e = diary_generate_today();           /* 同步生成 */
         if (e == ESP_OK) {                              /* 成功 */
-            diary_entry_t d;                            /* 读回正文展示 */
+            static diary_entry_t d;                     /* 读回正文展示（static：2KB 不进栈） */
             /* 生成完读今日：直接再查一次（日期在服务内部） */
             char dates[1][DIARY_DATE_MAX];              /* 列表容器 */
             if (diary_list(dates, 1) > 0 &&             /* 索引头即最新 */
@@ -158,7 +172,7 @@ static void exec_diary_cmd(char *rest)
             }
             strlcpy(date, dates[0], DIARY_DATE_MAX);    /* 取最新 */
         }
-        diary_entry_t d;                                /* 条目容器 */
+        static diary_entry_t d;                         /* 条目容器（static：2KB 不进栈，控制台单线程安全） */
         if (diary_read(date, &d) == ESP_OK) {           /* 读到 */
             char line[128];                             /* 头行（给大防 truncation 告警） */
             snprintf(line, sizeof(line), "──── %s 日记 ────\r\n", d.date);

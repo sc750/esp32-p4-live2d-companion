@@ -69,8 +69,9 @@ static void build_system_prompt(void)
     p[0] = '\0';                                        /* 清空重来 */
     strlcpy(p, persona_base(), SYS_PROMPT_MAX);         /* 1. 基础人设打底 */
 
-    /* 2. 长期记忆 top-N（空 query = 按重要性降序取前几条） */
-    memory_entry_t mems[MEM_INJECT_MAX];                /* 结果快照数组（栈，2KB 级） */
+    /* 2. 长期记忆 top-N（空 query = 按重要性降序取前几条）
+     * static：2KB 级快照不进栈——本函数在 s_dlg.lock 保护下调用，单线程安全 */
+    static memory_entry_t mems[MEM_INJECT_MAX];         /* 结果快照数组 */
     int nmem = memory_store_search(NULL, mems, MEM_INJECT_MAX); /* 取 top-N */
     if (nmem > 0) {                                     /* 有记忆才注入 */
         strlcat(p, "\n\n关于用户的记忆（可在对话中自然运用，别生硬复述）：",
