@@ -27,7 +27,9 @@ CONFIG_CACHE_L2_CACHE_LINE_128B=y
 # === 系统 ===
 CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT=y
 CONFIG_FATFS_LFN_HEAP=y
-CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM=y
+# 注：CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM 本版 esp_hosted(3.0.2) 无此符号，
+# 写了也是死配置（生成的 sdkconfig 里根本不出现），已于 2026-09-10 删除。
+# 真正管 SDIO 收发缓冲落哪块堆的开关在 port/Kconfig.ext，见下方 ESP-Hosted 段。
 # main 任务栈：默认 3584B 在 Phase4（SD/FATFS 挂载 + 长中文日志）下实测溢出
 # （Guru Meditation: Stack protection fault，SP 低于栈下界），放大到 8KB。
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
@@ -58,8 +60,13 @@ CONFIG_ESP_HOSTED_CP_TARGET_FROM_WIFI_REMOTE=y
 
 # === LVGL ===
 CONFIG_LV_COLOR_SCREEN_TRANSP=y
-CONFIG_LV_MEM_CUSTOM=y
-CONFIG_LV_MEM_CUSTOM_INCLUDE="esp_heap_caps.h"
+# 注：CONFIG_LV_MEM_CUSTOM 是 LVGL v8 的开关，v9 已删除——写了同样不生效，
+# 结果 LVGL 仍用内建 TLSF，64KB 池固化成内部 SRAM 的 .bss.work_mem_int.0
+# （map 实测 0x10000=65536B），挤压 esp_hosted 的 SDIO 缓冲。已删。
+# v9 对应写法是 LV_USE_STDLIB_MALLOC 三选一，这里选 CLIB：
+# 让 LVGL 的内存走 IDF 堆，>16KB 的大块按 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL
+# 自动落到 PSRAM，内部 SRAM 不再被固定预留 64KB。
+CONFIG_LV_USE_CLIB_MALLOC=y
 CONFIG_LV_MEMCPY_MEMSET_STD=y
 CONFIG_LV_DISP_DEF_REFR_PERIOD=15
 CONFIG_LV_CIRCLE_CACHE_SIZE=10
@@ -86,6 +93,14 @@ CONFIG_ESP_HOSTED_DFLT_TASK_STACK=6144
 CONFIG_ESP_HOSTED_DFLT_TASK_FROM_SPIRAM=y
 CONFIG_ESP_HOSTED_HOST_SDIO_TX_Q_SIZE=10
 CONFIG_ESP_HOSTED_HOST_SDIO_RX_Q_SIZE=10
+# 注（2026-09-10 实测证伪）：曾想开 CONFIG_EH_HOST_PORT_DMA_PREFER_SPIRAM
+# 把 SDIO 收发缓冲挪到 PSRAM，但本工程 IDF 5.5.4 / ESP32-P4 上不成立——
+# esp_psram_extram_add_to_heap_allocator() 给 PSRAM 堆注册的 caps 只有
+# {MALLOC_CAP_SPIRAM|MALLOC_CAP_DEFAULT, 0, MALLOC_CAP_8BIT|32BIT|SIMD}，
+# 不含 MALLOC_CAP_DMA，所以 heap_caps_aligned_alloc(MALLOC_CAP_SPIRAM|
+# MALLOC_CAP_DMA, …) 恒返回 NULL（板子上打印 "PSRAM-DMA堆: 空闲=0KB"），
+# 该开关开了也是死配置。真正管用的是"把内部 SRAM 静态占用腾出来"，
+# 见下方 LVGL 段 —— 那次改动让 .dram0.bss 从 113KB 降到 47.5KB。
 
 # === 日志 ===
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y

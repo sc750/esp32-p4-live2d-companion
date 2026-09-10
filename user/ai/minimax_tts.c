@@ -109,8 +109,14 @@ esp_err_t minimax_tts_synthesize(const char *text,
              s_mm.model, esc, s_mm.voice);                  /* 模型/文本/音色 */
     free(esc);                                              /* 转义串用完释放 */
 
-    /* ---- 2. POST 非流式：整段 hex 音频一次收齐（响应可达数百 KB） ---- */
-    size_t resp_cap = 768 * 1024;                           /* 响应缓冲 768KB（hex 2 倍膨胀） */
+    /* ---- 2. POST 非流式：整段 hex 音频一次收齐（响应可达数百 KB） ----
+     * 容量 2MB 是实测定的（2026-09-10）：MiniMax 回的是 hex，字符数 = PCM
+     * 字节数 × 2，三玖一条 292 字回复就合成出 795KB PCM → hex 1.59MB，
+     * 加上 JSON 骨架约 1.6MB。原先给 768KB，收满被静默截断，JSON 不完整
+     * → cJSON_Parse 失败 → 每次都白白回退到 MiMo（日志"响应非 JSON
+     * （共 767KB）"，767 = 768 - 1 正是截断标志）。PSRAM 余量 14MB，
+     * 2MB 给得起；峰值内存 = 2MB 响应 + 1.6MB PCM 解码缓冲 ≈ 3.6MB。 */
+    size_t resp_cap = 2 * 1024 * 1024;                      /* 响应缓冲 2MB（hex 2 倍膨胀 + 余量） */
     char *resp = heap_caps_malloc(resp_cap, MALLOC_CAP_SPIRAM);     /* 响应缓冲（PSRAM） */
     if (!resp) {                                            /* 分配失败 */
         free(body);                                         /* 释放 body */

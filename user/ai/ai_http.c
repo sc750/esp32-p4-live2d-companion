@@ -198,6 +198,14 @@ static esp_err_t post_json_inner(const char *url, const char *api_key,
     resp_buf[n] = '\0';
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
+    /* 截断告警（2026-09-10 追加）：循环是"缓冲满就停"，调用方拿到的是被
+     * 割掉尾巴的 JSON —— cJSON_Parse 只会报"解析失败"，看不出是容量问题。
+     * MiniMax TTS 的 768KB 缓冲就这么坑过一次（响应恒 767KB 非 JSON），
+     * 故这里主动说明，把"猜"变成"一眼看到"。 */
+    if (n + 1 >= resp_size) {                       /* 顶到容量上限 = 极可能被截断 */
+        ESP_LOGE(TAG, "响应缓冲已满(%uB)，JSON 很可能被截断——请调大调用方 resp_cap",   /* 明确指路 */
+                 (unsigned)resp_size);               /* 报当前容量 */
+    }
     ESP_LOGI(TAG, "POST 响应: HTTP %d, 收 %uB",      /* 诊断：定位 200+空 body 场景 */
              status, (unsigned)n);
     if (r < 0) {

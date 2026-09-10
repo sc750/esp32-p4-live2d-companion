@@ -387,6 +387,17 @@ void mem_print_report(void)
     ESP_LOGI(TAG, "PSRAM 最大连续空闲块: %zuKB",
              stats.psram_largest_free / 1024);
     ESP_LOGI(TAG, "内部 SRAM 已用: %zuKB", stats.internal_used / 1024);
+    /* --- Phase4 诊断：SDIO 传输缓冲所在堆的余量（2026-09-10 追加） ---
+     * esp_hosted 的 SDIO 收发缓冲走 heap_caps_* 显式指定 caps 分配，成败只看
+     * 这两块堆，与上面的 PSRAM 总量/内部 SRAM 总量都不是一回事。上板曾出现
+     * `eh_sdio: dma_alloc(4608) failed; dropping read` 后数据面永久失联，
+     * 故把"空闲 + 最大连续块"常态化打印，便于随时判定是不是又把内部 RAM 挤爆。 */
+    ESP_LOGI(TAG, "内部DMA堆: 空闲=%zuKB, 最大连续=%zuKB",                /* 内部可 DMA 堆 */
+             heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA) / 1024,          /* 空闲量 */
+             heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA) / 1024); /* 最大连续块 */
+    ESP_LOGI(TAG, "PSRAM-DMA堆: 空闲=%zuKB, 最大连续=%zuKB",              /* PSRAM 可 DMA 堆 */
+             heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA) / 1024,            /* 空闲量 */
+             heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA) / 1024);  /* 最大连续块 */
     ESP_LOGI(TAG, "碎片率: %d%%", stats.fragmentation_pct);
     ESP_LOGI(TAG, "内存池命中率: %d%%", stats.pool_hit_rate_pct);
 

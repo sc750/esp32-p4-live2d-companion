@@ -381,7 +381,17 @@ static void process_wav(char *wav, size_t wav_len)
  * 可能低于实时播放速度。语音按短语切分，每段必须完整预取后才稳定播出；
  * 下一段在上一段播放期间继续下载，避免网络抖动直接传到扬声器。
  */
-#define SPK_RING_SIZE         (512 * 1024) /* 约 8 秒 16kHz/双声道 PCM16 */
+/*
+ * 环形缓冲容量（2026-09-10 上板实测后由 512KB 提到 2MB）：
+ * 512KB 只够 8 秒 16kHz/双声道 PCM16，而三玖正常一条回复就能合成出
+ * 400~690KB PCM（10 秒以上）。生产端（TTS 拉流）比实时快得多，
+ * 8 秒的余量一眨眼就填满 → xStreamBufferSend 等 2 秒写不进 →
+ * "TTS ring write timeout: 20480/20480B dropped" 成片出现，
+ * 同时 playback stats 报 send_timeouts=20 / max_feed_gap=5698ms。
+ * PSRAM 有 14MB 富余，直接给到 2MB（≈32 秒），把网络抖动、
+ * 渲染抢占、长句整体预取全部吸收进来，不再丢样。
+ */
+#define SPK_RING_SIZE         (2 * 1024 * 1024) /* 约 32 秒 16kHz/双声道 PCM16 */
 #define SPK_RECV_TIMEOUT_MS   40           /* 播放任务取数据短超时（欠载探测粒度） */
 
 /* 串口文本播报的播放状态（ring buffer + 重采样残样 + 诊断计数） */
