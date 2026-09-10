@@ -34,6 +34,7 @@
 
 #include "bsp_wifi.h"           /* WiFi 连接状态查询 */
 #include "bsp_audio.h"          /* 扬声器播放（bsp_audio_play） */
+#include "music_service.h"      /* Phase4：TTS 抢占音乐（PRD M10 方案 A） */
 #include "voice_rec.h"          /* 录音器 */
 #include "asr_client.h"         /* ASR（讯飞/MiMo 双后端） */
 #include "tts_client.h"         /* TTS（MiMo 流式合成） */
@@ -229,6 +230,10 @@ static void tts_play_task(void *arg)
             continue;                                   /* 队列异常时继续下一轮 */
         }
         xSemaphoreTake(s_speak_lock, portMAX_DELAY);    /* 拿扬声器互斥锁（防两路同时播） */
+        /* Phase4：TTS 抢占音乐（PRD M10 方案 A）——第一句播出前停掉音乐并等其
+         * 恢复 16k 采样率（音乐播放时 I2S 可能切在 44.1k/48k，直接播 TTS 会变调）。
+         * 无音乐时该调用立即返回，零开销。 */
+        music_notify_voice_start();
         ui_state(DIALOG_STATE_SPEAKING);                /* 绿点亮起（说话中） */
         ESP_LOGI(TAG, "TTS playback start: buffered=%uB (complete phrase)",     /* 打印短语信息 */
                  (unsigned)phrase->len);                /* 预取完成的字节数 */

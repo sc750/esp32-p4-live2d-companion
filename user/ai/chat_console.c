@@ -30,6 +30,7 @@
 
 #include "memory_store.h"
 #include "diary_service.h"
+#include "music_service.h"
 
 #define TAG "chat_con"
 
@@ -172,6 +173,86 @@ static void exec_diary_cmd(char *rest)
     say("未知子命令。用法: diary now | diary list | diary read [YYYY-MM-DD]\r\n");
 }
 
+/** "music" 命令族：scan/list/play/pause/resume/stop/next/prev/vol/status */
+static void exec_music_cmd(char *rest)
+{
+    char what[16] = {0};                                /* 子命令缓冲 */
+    rest += strspn(rest, " ");                          /* 剥前导空格 */
+    if (sscanf(rest, "%15s", what) != 1) {              /* 裸 "music"：帮助 */
+        say("用法: music scan|list|play <n>|pause|resume|stop|next|prev|vol <0-100>|status\r\n");
+        return;                                         /* 结束 */
+    }
+    if (strcmp(what, "scan") == 0) {                    /* 重扫 SD */
+        char line[64];                                  /* 回执行 */
+        snprintf(line, sizeof(line), "扫描到 %d 首\r\n", music_scan());
+        say(line);                                      /* 输出数目 */
+        return;                                         /* 结束 */
+    }
+    if (strcmp(what, "list") == 0) {                    /* 列曲目 */
+        int n = music_count();                          /* 曲目数 */
+        char line[64];                                  /* 行缓冲 */
+        snprintf(line, sizeof(line), "共 %d 首:\r\n", n);
+        say(line);                                      /* 总数行 */
+        for (int i = 0; i < n; i++) {                   /* 逐条打印 */
+            say("  ");                                  /* 缩进 */
+            say(music_name_at(i));                      /* 曲名（见下） */
+            say("\r\n");                                /* 换行 */
+        }
+        return;                                         /* 结束 */
+    }
+    if (strcmp(what, "play") == 0) {                    /* 播指定/第 0 首 */
+        int idx = 0;                                    /* 默认第 0 首 */
+        sscanf(rest + strlen(what), " %d", &idx);       /* 有参数就取 */
+        esp_err_t e = music_play_index(idx);            /* 发播放命令 */
+        say(e == ESP_OK ? "播放中\r\n" : "无此曲目（先 music scan）\r\n");
+        return;                                         /* 结束 */
+    }
+    if (strcmp(what, "pause") == 0) {                   /* 暂停 */
+        say(music_pause() == ESP_OK ? "已暂停\r\n" : "没在播放\r\n");
+        return;                                         /* 结束 */
+    }
+    if (strcmp(what, "resume") == 0) {                  /* 恢复 */
+        say(music_resume() == ESP_OK ? "继续播放\r\n" : "没有暂停中的歌\r\n");
+        return;                                         /* 结束 */
+    }
+    if (strcmp(what, "stop") == 0) {                    /* 停止 */
+        music_stop();                                   /* 停（内部等退出） */
+        say("已停止\r\n");                              /* 回执 */
+        return;                                         /* 结束 */
+    }
+    if (strcmp(what, "next") == 0) {                    /* 下一首 */
+        say(music_next() == ESP_OK ? "切下一首\r\n" : "列表为空\r\n");
+        return;                                         /* 结束 */
+    }
+    if (strcmp(what, "prev") == 0) {                    /* 上一首 */
+        say(music_prev() == ESP_OK ? "切上一首\r\n" : "列表为空\r\n");
+        return;                                         /* 结束 */
+    }
+    if (strcmp(what, "vol") == 0) {                     /* 音量 */
+        int v = -1;                                     /* 目标音量 */
+        sscanf(rest + strlen(what), " %d", &v);         /* 取参数 */
+        if (v < 0) {                                    /* 没给参数 */
+            say("用法: music vol <0-100>\r\n");         /* 提示 */
+            return;                                     /* 结束 */
+        }
+        say(music_set_volume(v) == ESP_OK ? "音量已设\r\n" : "音量设失败\r\n");
+        return;                                         /* 结束 */
+    }
+    if (strcmp(what, "status") == 0) {                  /* 状态 */
+        const char *cur = music_current_name();         /* 当前曲名 */
+        char line[128];                                 /* 状态行 */
+        if (cur) {                                      /* 有歌 */
+            snprintf(line, sizeof(line), "播放中: %s | %ds | 音量见 vol\r\n",
+                     cur, music_position_sec());        /* 拼状态 */
+        } else {                                        /* 没歌 */
+            snprintf(line, sizeof(line), "空闲（%d 首待播）\r\n", music_count());
+        }
+        say(line);                                      /* 输出 */
+        return;                                         /* 结束 */
+    }
+    say("未知子命令\r\n");                              /* 兜底 */
+}
+
 /** 一行到手（已剥行尾、非空） */
 static void dispatch_line(char *line, size_t len)
 {
@@ -191,6 +272,15 @@ static void dispatch_line(char *line, size_t len)
     }
     if (len == 5 && strncmp(line, "diary", 5) == 0) {   /* 裸 "diary" 给帮助 */
         exec_diary_cmd("");                             /* 空参数触发用法 */
+        return;                                         /* 结束 */
+    }
+    /* 命令路由："music" 族（scan/list/play/...） */
+    if (len >= 6 && strncmp(line, "music ", 6) == 0) {
+        exec_music_cmd(line + 6);                       /* 交给 music 处理器 */
+        return;                                         /* 命令不说话 */
+    }
+    if (len == 5 && strncmp(line, "music", 5) == 0) {   /* 裸 "music" 给帮助 */
+        exec_music_cmd("");                             /* 空参数触发用法 */
         return;                                         /* 结束 */
     }
     /* 剥 "chat " 前缀（可剥可不剥，少打字） */

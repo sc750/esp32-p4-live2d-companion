@@ -119,3 +119,29 @@ extern "C" bool bsp_display_is_ready(void)
 {
     return s_is_display_ready;
 }
+
+/* ---------- SD 卡（Phase4 M10：音乐播放的数据源） ---------- */
+
+static bool s_sd_mounted = false;           /* 挂载状态（幂等 + 状态查询） */
+
+extern "C" esp_err_t bsp_sd_mount(void)
+{
+    if (s_sd_mounted) {                     /* 已挂载（重复调用无害） */
+        return ESP_OK;                      /* 直接成功 */
+    }
+    /* 厂商 BSP 一键挂载：内部按板级走线取 SDMMC 槽 + FATFS 挂到 /sdcard。
+     * 注意不能复用同名符号——厂商已导出 bsp_sdcard_mount，故本封装另起名。 */
+    esp_err_t err = ::bsp_sdcard_mount();
+    if (err == ESP_OK) {                    /* 成功 */
+        s_sd_mounted = true;                /* 记状态 */
+    } else if (err == ESP_ERR_INVALID_STATE) {  /* 已挂过（VFS 层返回） */
+        s_sd_mounted = true;                /* 视为可用 */
+        err = ESP_OK;                       /* 归一为成功 */
+    }
+    return err;                             /* 返回结果 */
+}
+
+extern "C" bool bsp_sd_is_mounted(void)
+{
+    return s_sd_mounted;                    /* 状态直读 */
+}

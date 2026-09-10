@@ -26,6 +26,7 @@
 #include "memory_extract.h"
 #include "diary_service.h"
 #include "ai_http.h"
+#include "music_service.h"
 #include "chat_console.h"
 #include "voice_pipeline.h"
 #include "esp_timer.h"
@@ -100,6 +101,7 @@ static void on_voice_hold(bool holding, void *ctx)
 {
     (void)ctx;
     if (holding) {
+        music_notify_voice_start();     /* Phase4：按住说话即停音乐（比 TTS 抢占更早介入） */
         voice_pipeline_hold_start();
     } else {
         voice_pipeline_hold_stop();
@@ -197,6 +199,7 @@ void user_app_run(void)
     ESP_ERROR_CHECK(memory_store_init());       /* Phase4：长期记忆先就位（读回 SPIFFS） */
     ESP_ERROR_CHECK(memory_extract_init());     /* Phase4：摘要提取缓冲 */
     ESP_ERROR_CHECK(diary_service_init());      /* Phase4：日记服务（22:00 定时） */
+    ESP_ERROR_CHECK(music_service_init());      /* Phase4：音乐服务（SD 挂载+播放任务） */
     ESP_ERROR_CHECK(dialog_manager_init());
     ESP_ERROR_CHECK(llm_client_init());
     ESP_ERROR_CHECK(voice_pipeline_init());

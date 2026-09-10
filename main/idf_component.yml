@@ -22,3 +22,5 @@ dependencies:
     public: true
   # WebSocket 客户端（M3：讯飞流式听写 ASR 走 wss 协议）
   espressif/esp_websocket_client: "^1.4.0"
+  # 音频软解码器（Phase4 M10：MP3 音乐播放；esp_audio_simple_decoder 统一接口）
+  espressif/esp_audio_codec: "^2.6.0"
