@@ -127,6 +127,12 @@ static void on_chat_line(const char *text, void *ctx)
     (void)ctx;
     ESP_LOGI("main", "对话输入: %s", text);
 
+    /* Phase4：任何一次对话交互开始前先停音乐。
+     * 必要性：音乐流（持续占 SDIO 带宽）与随后的 LLM HTTPS 请求并发时，
+     * 实测会把 esp_hosted 的 SDIO 收发内存池打满（"mempool OOM"），
+     * 双方一起超时——先停音乐把带宽让给对话，是最省事的根治。 */
+    music_notify_voice_start();
+
     /* "rec 3" = 录 3 秒并走完整语音管线（M1 管线调试口） */
     if (strncmp(text, "rec ", 4) == 0) {
         int sec = atoi(text + 4);

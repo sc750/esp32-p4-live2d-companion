@@ -253,12 +253,15 @@ static void exec_music_cmd(char *rest)
         return;                                         /* 结束 */
     }
     if (strcmp(what, "status") == 0) {                  /* 状态 */
-        const char *cur = music_current_name();         /* 当前曲名 */
-        char line[128];                                 /* 状态行 */
-        if (cur) {                                      /* 有歌 */
-            snprintf(line, sizeof(line), "播放中: %s | %ds | 音量见 vol\r\n",
-                     cur, music_position_sec());        /* 拼状态 */
-        } else {                                        /* 没歌 */
+        const char *cur = music_current_name();         /* 当前曲名（无歌为 NULL） */
+        char line[160];                                 /* 状态行 */
+        if (cur && music_is_playing()) {                /* 正在播 */
+            snprintf(line, sizeof(line), "播放中: %s | %ds\r\n",
+                     cur, music_position_sec());        /* 曲名 + 已播秒数 */
+        } else if (cur) {                               /* 有目标但没在播 */
+            snprintf(line, sizeof(line), "已停止（上次: %s）| 共 %d 首\r\n",
+                     cur, music_count());               /* 提示上次曲目 */
+        } else {                                        /* 从未播过 */
             snprintf(line, sizeof(line), "空闲（%d 首待播）\r\n", music_count());
         }
         say(line);                                      /* 输出 */

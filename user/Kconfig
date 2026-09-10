@@ -53,4 +53,16 @@ menu "AI 对话服务配置（phase3）"
         default 10
         range 1 40
 
+    config MUSIC_RADIO_URL_1
+        string "网络电台 1 流地址（留空禁用；建议明文 http，不占 mbedTLS）"
+        default "http://ice1.somafm.com/groovesalad-128-mp3"
+
+    config MUSIC_RADIO_URL_2
+        string "网络电台 2 流地址（留空禁用）"
+        default "http://ice1.somafm.com/lush-128-mp3"
+
+    config MUSIC_RADIO_URL_3
+        string "网络电台 3 流地址（留空禁用）"
+        default "http://ice1.somafm.com/dronezone-128-mp3"
+
 endmenu
