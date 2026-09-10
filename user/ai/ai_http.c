@@ -17,12 +17,29 @@
 #include "esp_http_client.h"
 #include "esp_heap_caps.h"
 #include "esp_crt_bundle.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 #define TAG "ai_http"
 
 /* SSE 行缓冲：TTS 流式单行可能是整段音频的大 base64，给足余量（PSRAM）。
  * 注意：超长行会被静默截断——解析端需能容忍残行（cJSON 解析失败即忽略） */
 #define SSE_LINE_BUF_SIZE   (64 * 1024)
+
+/* 全局网络互斥：LLM/TTS/提取/日记共用一条 HTTP 通道，同时只放一个请求。
+ * 根因是 PRD 2.2 硬约束——mbedTLS 共享 SHA/AES 硬件加速器，并发 TLS 会崩。
+ * Phase3 链路天然串行掩盖了它；Phase4 日记定时器打破串行，故在此咽喉设闸。 */
+static SemaphoreHandle_t s_net_lock;
+
+esp_err_t ai_http_init(void)
+{
+    if (s_net_lock) {                                   /* 幂等 */
+        return ESP_OK;                                  /* 无害返回 */
+    }
+    s_net_lock = xSemaphoreCreateMutex();               /* 建锁 */
+    ESP_RETURN_ON_FALSE(s_net_lock, ESP_ERR_NO_MEM, TAG, "no mem for net lock");
+    return ESP_OK;                                      /* 成功 */
+}
 
 /** 请求公共准备：创建 client + 头 + 发 body。成功后 *out 持有句柄 */
 static esp_err_t http_common_setup(esp_http_client_handle_t *out,
@@ -69,9 +86,10 @@ static esp_err_t http_common_setup(esp_http_client_handle_t *out,
     return ESP_OK;
 }
 
-esp_err_t ai_http_post_sse(const char *url, const char *api_key,
-                           const char *json_body, ai_sse_cb_t on_data,
-                           void *ctx, int recv_timeout_s)
+/** SSE 内部实现（调用方持锁） */
+static esp_err_t post_sse_inner(const char *url, const char *api_key,
+                                const char *json_body, ai_sse_cb_t on_data,
+                                void *ctx, int recv_timeout_s)
 {
     esp_http_client_handle_t client = NULL;
     int timeout_ms = (recv_timeout_s > 0 ? recv_timeout_s : 10) * 1000;
@@ -142,10 +160,27 @@ out:
     return ret;
 }
 
-esp_err_t ai_http_post_json(const char *url, const char *api_key,
-                            const char *json_body,
-                            char *resp_buf, size_t resp_size,
-                            int recv_timeout_s)
+/** SSE 外壳：持全局网络锁再进内部实现（锁等待上限 150s 覆盖长流） */
+esp_err_t ai_http_post_sse(const char *url, const char *api_key,
+                           const char *json_body, ai_sse_cb_t on_data,
+                           void *ctx, int recv_timeout_s)
+{
+    if (s_net_lock && xSemaphoreTake(s_net_lock, pdMS_TO_TICKS(150000)) != pdTRUE) {
+        ESP_LOGW(TAG, "网络锁等待超时（有请求卡 150s+）");      /* 极端拥堵告警 */
+        return ESP_ERR_TIMEOUT;                         /* 放弃本次 */
+    }
+    esp_err_t r = post_sse_inner(url, api_key, json_body, on_data, ctx, recv_timeout_s);
+    if (s_net_lock) {                                   /* 归还锁（若存在） */
+        xSemaphoreGive(s_net_lock);                     /* 释放通道 */
+    }
+    return r;                                           /* 返回内部结果 */
+}
+
+/** JSON 内部实现（调用方持锁） */
+static esp_err_t post_json_inner(const char *url, const char *api_key,
+                                 const char *json_body,
+                                 char *resp_buf, size_t resp_size,
+                                 int recv_timeout_s)
 {
     esp_http_client_handle_t client = NULL;
     int timeout_ms = (recv_timeout_s > 0 ? recv_timeout_s : 10) * 1000;
@@ -174,4 +209,22 @@ esp_err_t ai_http_post_json(const char *url, const char *api_key,
         return ESP_FAIL;
     }
     return ESP_OK;
+}
+
+/** JSON 外壳：持全局网络锁再进内部实现（锁等待上限 150s） */
+esp_err_t ai_http_post_json(const char *url, const char *api_key,
+                            const char *json_body,
+                            char *resp_buf, size_t resp_size,
+                            int recv_timeout_s)
+{
+    if (s_net_lock && xSemaphoreTake(s_net_lock, pdMS_TO_TICKS(150000)) != pdTRUE) {
+        ESP_LOGW(TAG, "网络锁等待超时（有请求卡 150s+）");      /* 极端拥堵告警 */
+        return ESP_ERR_TIMEOUT;                         /* 放弃本次 */
+    }
+    esp_err_t r = post_json_inner(url, api_key, json_body, resp_buf, resp_size,
+                                  recv_timeout_s);
+    if (s_net_lock) {                                   /* 归还锁（若存在） */
+        xSemaphoreGive(s_net_lock);                     /* 释放通道 */
+    }
+    return r;                                           /* 返回内部结果 */
 }

@@ -29,6 +29,7 @@
 #include "freertos/task.h"
 
 #include "memory_store.h"
+#include "diary_service.h"
 
 #define TAG "chat_con"
 
@@ -100,6 +101,77 @@ static void exec_mem_cmd(char *rest)
     say("未知子命令。用法: mem list | mem add <内容> | mem del <id> | mem clear\r\n");
 }
 
+/** "diary" 命令族：now / list / read [date]（生成阻塞数秒，串口上下文可接受） */
+static void exec_diary_cmd(char *rest)
+{
+    char what[16] = {0};                                /* 子命令缓冲 */
+    rest += strspn(rest, " ");                          /* 剥前导空格 */
+    if (sscanf(rest, "%15s", what) != 1) {              /* 裸 "diary"：帮助 */
+        say("用法: diary now | diary list | diary read [今天|YYYY-MM-DD]\r\n");
+        return;                                         /* 结束 */
+    }
+    if (strcmp(what, "now") == 0) {                     /* 立即生成 */
+        say("正在生成今日日记（数秒）……\r\n");          /* 提示耗时 */
+        esp_err_t e = diary_generate_today();           /* 同步生成 */
+        if (e == ESP_OK) {                              /* 成功 */
+            diary_entry_t d;                            /* 读回正文展示 */
+            /* 生成完读今日：直接再查一次（日期在服务内部） */
+            char dates[1][DIARY_DATE_MAX];              /* 列表容器 */
+            if (diary_list(dates, 1) > 0 &&             /* 索引头即最新 */
+                diary_read(dates[0], &d) == ESP_OK) {   /* 读最新一篇 */
+                say("──── 今日日记 ────\r\n");          /* 分隔头 */
+                say(d.content);                         /* 正文 */
+                say("\r\n────────────────\r\n");        /* 分隔尾 */
+            } else {
+                say("生成成功但读回失败\r\n");          /* 罕见 */
+            }
+        } else {                                        /* 失败 */
+            say("生成失败（网络/时钟未同步/无素材）\r\n");      /* 提示 */
+        }
+        return;                                         /* 结束 */
+    }
+    if (strcmp(what, "list") == 0) {                    /* 列日期 */
+        char dates[16][DIARY_DATE_MAX];                 /* 最多列 16 条 */
+        int n = diary_list(dates, 16);                  /* 读索引 */
+        char line[128];                                 /* 行缓冲（GCC 对未定长参数保守，给大防 truncation 告警） */
+        snprintf(line, sizeof(line), "共 %d 篇日记:\r\n", n);
+        say(line);                                      /* 总数行 */
+        for (int i = 0; i < n; i++) {                   /* 逐条 */
+            say("  ");                                  /* 缩进 */
+            say(dates[i]);                              /* 日期（直写，绕开 %s 截断告警） */
+            say("\r\n");                                /* 换行 */
+        }
+        return;                                         /* 结束 */
+    }
+    if (strcmp(what, "read") == 0) {                    /* 读某天 */
+        char date[DIARY_DATE_MAX] = {0};                /* 目标日期 */
+        char word[20] = {0};                            /* 参数词 */
+        if (sscanf(rest + strlen(what), " %19s", word) == 1 &&  /* 有参数 */
+            sscanf(word, "%10s", date) == 1 && strlen(date) == 10) {    /* 形如日期 */
+            /* 传入 YYYY-MM-DD */
+        } else {                                        /* 无参/别的不认：读最新 */
+            char dates[1][DIARY_DATE_MAX];              /* 容器 */
+            if (diary_list(dates, 1) <= 0) {            /* 没有任何日记 */
+                say("还没有日记，先 diary now 生成一篇\r\n");
+                return;                                 /* 结束 */
+            }
+            strlcpy(date, dates[0], DIARY_DATE_MAX);    /* 取最新 */
+        }
+        diary_entry_t d;                                /* 条目容器 */
+        if (diary_read(date, &d) == ESP_OK) {           /* 读到 */
+            char line[128];                             /* 头行（给大防 truncation 告警） */
+            snprintf(line, sizeof(line), "──── %s 日记 ────\r\n", d.date);
+            say(line);                                  /* 头 */
+            say(d.content);                             /* 正文 */
+            say("\r\n────────────────\r\n");            /* 尾 */
+        } else {
+            say("该日期无日记\r\n");                    /* 无此日 */
+        }
+        return;                                         /* 结束 */
+    }
+    say("未知子命令。用法: diary now | diary list | diary read [YYYY-MM-DD]\r\n");
+}
+
 /** 一行到手（已剥行尾、非空） */
 static void dispatch_line(char *line, size_t len)
 {
@@ -110,6 +182,15 @@ static void dispatch_line(char *line, size_t len)
     }
     if (len == 3 && strncmp(line, "mem", 3) == 0) {     /* 裸 "mem" 也给帮助 */
         exec_mem_cmd("");                               /* 空参数触发用法 */
+        return;                                         /* 结束 */
+    }
+    /* 命令路由："diary" 族（now/list/read） */
+    if (len >= 6 && strncmp(line, "diary ", 6) == 0) {
+        exec_diary_cmd(line + 6);                       /* 交给 diary 处理器 */
+        return;                                         /* 命令不说话 */
+    }
+    if (len == 5 && strncmp(line, "diary", 5) == 0) {   /* 裸 "diary" 给帮助 */
+        exec_diary_cmd("");                             /* 空参数触发用法 */
         return;                                         /* 结束 */
     }
     /* 剥 "chat " 前缀（可剥可不剥，少打字） */

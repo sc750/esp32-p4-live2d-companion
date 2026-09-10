@@ -30,6 +30,7 @@
 #include "persona.h"
 #include "memory_store.h"
 #include "memory_extract.h"
+#include "diary_service.h"
 #include "time_sync.h"
 
 #define TAG "dialog"
@@ -411,6 +412,7 @@ static char *dialog_ask_locked(const char *user_text, llm_token_cb_t on_token,
         }
         /* Phase4：投喂摘要提取（攒满 4 轮就地提取；处于对话空隙不抢网络） */
         memory_extract_note_round(user_copy, reply);
+        diary_note_round();                     /* Phase4：日记素材轮数 +1 */
         ESP_LOGI(TAG, "一轮完成（问 %u 字节 / 答 %u 字节）",
                  (unsigned)strlen(user_text), (unsigned)acc.len);
     }

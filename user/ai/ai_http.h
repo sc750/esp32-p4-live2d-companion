@@ -31,6 +31,14 @@ extern "C" {
 typedef void (*ai_sse_cb_t)(const char *data_line, void *ctx);
 
 /**
+ * @brief 初始化网络互斥锁（须在任何 post_* 之前调用一次；幂等）
+ *
+ * Phase4 起全工程 HTTPS 请求统一在此串行化（mbedTLS 硬件加速器并发
+ * 会崩，见 conventions）——调用方不再各自保证串行。
+ */
+esp_err_t ai_http_init(void);
+
+/**
  * @brief POST JSON 并按 SSE 逐行回调（流式）
  *
  * @param url        完整 URL（如 base_url + "/chat/completions"）
