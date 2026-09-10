@@ -258,6 +258,11 @@ static void exec_music_cmd(char *rest)
         if (cur && music_is_playing()) {                /* 正在播 */
             snprintf(line, sizeof(line), "播放中: %s | %ds\r\n",
                      cur, music_position_sec());        /* 曲名 + 已播秒数 */
+        } else if (cur && music_is_paused()) {          /* 暂停态（2026-09-10 修） */
+            /* 原先没有这一支：music_is_playing() 把暂停并入了 false，
+             * 于是 pause 之后 status 会打"已停止"，与实际状态不符 */
+            snprintf(line, sizeof(line), "已暂停: %s | %ds\r\n",
+                     cur, music_position_sec());        /* 曲名 + 已播秒数 */
         } else if (cur) {                               /* 有目标但没在播 */
             snprintf(line, sizeof(line), "已停止（上次: %s）| 共 %d 首\r\n",
                      cur, music_count());               /* 提示上次曲目 */

@@ -61,6 +61,9 @@ esp_err_t music_set_volume(int volume);
 /** 是否正在播放（含暂停态返回 false） */
 bool music_is_playing(void);
 
+/** 是否处于暂停态（在播但被 pause 暂停；与"已停止"区分） */
+bool music_is_paused(void);
+
 /** 当前曲名（文件名去路径；无歌返回 NULL） */
 const char *music_current_name(void);
 

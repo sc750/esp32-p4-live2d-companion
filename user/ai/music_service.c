@@ -231,15 +231,23 @@ static bool play_one_track(const music_track_t *t)
     uint64_t bytes_played = 0;                          /* 已产 PCM 字节（进度累计） */
     while (!eos && !s_mus.abort_cur) {                  /* 主循环 */
         /* 命令轮询：STOP 就地生效；切歌类命令"回插队列 + 中断本曲"，
-         * 让外层任务循环去处理（否则命令会被播放循环吞掉，下一首无反应） */
+         * 让外层任务循环去处理（否则命令会被播放循环吞掉，下一首无反应）。
+         * ★ 两个分支都必须 break（2026-09-10 上板实测：`music next` 后
+         * music 任务触发 task_wdt 死循环）：切歌类命令是"回插队首"，
+         * 若不跳出轮询 while，下一次 xQueueReceive 立刻又把它取出来、
+         * 再回插——队首命令永远取不完，循环里没有任何 vTaskDelay，
+         * 该任务从此不让出 CPU → 看门狗每 5 秒报 "task_wdt: CPU 1: music"，
+         * 且状态永远停在"播放中"，只有复位能救。跳出后命令仍在队首，
+         * 内层循环因 abort_cur 退出，外层 xQueueReceive 立刻取到并处理。 */
         music_msg_t m;                                  /* 命令槽 */
         while (xQueueReceive(s_mus.cmd_q, &m, 0) == pdTRUE) {   /* 清空队列 */
             if (m.cmd == MUS_CMD_STOP) {                /* 停止命令 */
                 s_mus.abort_cur = true;                 /* 置中断 */
-            } else {                                    /* 切歌/指定播放 */
-                xQueueSendToFront(s_mus.cmd_q, &m, 0);  /* 回插队首（外层立刻取到） */
-                s_mus.abort_cur = true;                 /* 中断本曲，尽快让位 */
+                break;                                  /* 跳出轮询（剩余命令交外层） */
             }
+            xQueueSendToFront(s_mus.cmd_q, &m, 0);      /* 切歌类：回插队首（外层立刻取到） */
+            s_mus.abort_cur = true;                     /* 中断本曲，尽快让位 */
+            break;                                      /* ★ 必须跳出，否则死循环（见上） */
         }
         if (s_mus.paused) {                             /* 暂停态 */
             vTaskDelay(pdMS_TO_TICKS(READ_CHUNK_MS));   /* 空转等待恢复 */
@@ -503,6 +511,15 @@ esp_err_t music_set_volume(int volume)
 bool music_is_playing(void)
 {
     return s_mus.playing && !s_mus.paused;              /* 播放且未暂停 */
+}
+
+/* 暂停态查询（2026-09-10 追加）：music_is_playing() 把暂停并入了 false，
+ * 但"暂停"和"停止"是两种状态——串口 status 原先只看 is_playing，
+ * 于是 pause 之后打的是"已停止（上次: …）"，与实际状态不符。
+ * 拆一个独立谓词给状态显示用，不动 is_playing 的既有语义。 */
+bool music_is_paused(void)
+{
+    return s_mus.playing && s_mus.paused;               /* 在播但被暂停 */
 }
 
 const char *music_current_name(void)
