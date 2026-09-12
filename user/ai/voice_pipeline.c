@@ -79,6 +79,7 @@ static struct {
     int64_t last_feed_us;           /* 上次喂缓冲时刻 */
     int16_t resample_tail[3];       /* 24k 源 PCM 不足三帧时跨 SSE 块续上 */
     size_t resample_tail_count;     /* 残样数量 */
+    SemaphoreHandle_t ring_lock;    /* ring 生命周期锁（WS 帧喂入 vs 删除，2026-09-12 崩溃修复） */
 } s_spk;
 
 
@@ -102,6 +103,7 @@ static volatile bool s_gw_asr_err;      /* 网关 ASR 失败标志（区别于�
 /* 前置声明（定义在文件后段，网关播报路径先用到） */
 static void on_tts_audio(const int16_t *pcm, size_t samples, void *ctx);
 static esp_err_t spk_ring_begin(void);
+static void spk_ring_end(void);
 static void gw_tts_pcm_cb(const uint8_t *pcm, size_t bytes);
 static void ui_text(const char *t);
 static uint32_t s_gw_tts_fed = 0;   /* 诊断：本轮已喂 ring 的 PCM 字节 */
@@ -253,14 +255,7 @@ static bool gw_dialog_round(const char *user_text, char **reply_out)
         s_gw_tts_end = false;
         vTaskDelay(pdMS_TO_TICKS(200));
     }
-    if (s_spk.ring) {                                   /* 会话资源清理 */
-        vStreamBufferDelete(s_spk.ring);
-        s_spk.ring = NULL;
-    }
-    if (s_spk.ring_mem) {
-        free(s_spk.ring_mem);
-        s_spk.ring_mem = NULL;
-    }
+    spk_ring_end();                                     /* 会话资源清理（等 player 退出后持锁删） */
     return ok;
 }
 
@@ -788,21 +783,29 @@ static void process_wav(char *wav, size_t wav_len)
 #define SPK_RECV_TIMEOUT_MS   40           /* 播放任务取数据短超时（欠载探测粒度） */
 
 
-/** 网关 TTS PCM 帧（WS 任务上下文）：24k/mono 分块 → 复用 speak 重采样进 ring */
+/** 网关 TTS PCM 帧（WS 任务上下文）：24k/mono 分块 → 持锁复用 speak 重采样进 ring */
 static void gw_tts_pcm_cb(const uint8_t *pcm, size_t bytes)
 {
-    if (s_spk.ring != NULL && !s_spk.synth_done && !s_spk.abort) {      /* 会话中且未被打断 */
+    if (xSemaphoreTake(s_spk.ring_lock, pdMS_TO_TICKS(3000)) != pdTRUE) {
+        return;                                         /* 拿不到锁（正在销毁）：丢帧 */
+    }
+    if (s_spk.ring != NULL && !s_spk.synth_done && !s_spk.abort) {
         s_gw_tts_fed += bytes;
         on_tts_audio((const int16_t *)pcm, bytes / sizeof(int16_t), NULL);
     }
+    xSemaphoreGive(s_spk.ring_lock);
 }
 
 /** 网关播报的 ring + 播放器初始化（从 voice_pipeline_speak 抽出复用） */
 static esp_err_t spk_ring_begin(void)
 {
+    if (xSemaphoreTake(s_spk.ring_lock, pdMS_TO_TICKS(3000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;                     /* 拿不到锁（正在销毁）：本轮放弃 */
+    }
     s_spk.ring_mem = heap_caps_malloc(SPK_RING_SIZE, MALLOC_CAP_SPIRAM);        /* PSRAM 分配 */
     if (!s_spk.ring_mem) {                          /* 分配失败 */
         ESP_LOGW(TAG, "播放缓冲（PSRAM）分配失败");
+        xSemaphoreGive(s_spk.ring_lock);
         return ESP_ERR_NO_MEM;
     }
     s_spk.ring = xStreamBufferCreateStatic(SPK_RING_SIZE, 1,        /* 静态创建流缓冲 */
@@ -816,13 +819,38 @@ static esp_err_t spk_ring_begin(void)
     s_spk.max_feed_gap_ms = 0;
     s_spk.last_feed_us = 0;
     s_spk.resample_tail_count = 0;
+    esp_err_t err = ESP_OK;
     if (xTaskCreate(player_task, "spk_play", 4 * 1024, NULL, 5, NULL) != pdPASS) {
         free(s_spk.ring_mem);                       /* 任务创建失败回滚 */
         s_spk.ring_mem = NULL;
         s_spk.ring = NULL;
-        return ESP_ERR_NO_MEM;
+        err = ESP_ERR_NO_MEM;
     }
-    return ESP_OK;
+    xSemaphoreGive(s_spk.ring_lock);
+    return err;
+}
+
+/** ring + 播放器销毁：等 player_task 排空退出后，持锁删除（barge-in 场景安全） */
+static void spk_ring_end(void)
+{
+    int wait_ms = 3000;                             /* 等 player 退出（abort 驱动 ≤40ms） */
+    while (!s_spk.player_done && wait_ms > 0) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        wait_ms -= 50;
+    }
+    vTaskDelay(pdMS_TO_TICKS(50));                  /* 等任务体完全退出（player_done 先于 vTaskDelete） */
+    if (xSemaphoreTake(s_spk.ring_lock, pdMS_TO_TICKS(3000)) != pdTRUE) {
+        return;                                     /* 拿不到锁：本轮回收由下一轮补收 */
+    }
+    if (s_spk.ring) {
+        vStreamBufferDelete(s_spk.ring);
+        s_spk.ring = NULL;
+    }
+    if (s_spk.ring_mem) {
+        free(s_spk.ring_mem);
+        s_spk.ring_mem = NULL;
+    }
+    xSemaphoreGive(s_spk.ring_lock);
 }
 
 /** 串口播报的播放任务：从 ring 取 PCM 喂 codec，排空且拉流结束才退出 */
@@ -1078,6 +1106,7 @@ esp_err_t voice_pipeline_init(void)
     s_speak_lock = xSemaphoreCreateMutex();         /* 创建扬声器互斥锁 */
     ESP_RETURN_ON_FALSE(s_speak_lock, ESP_ERR_NO_MEM, TAG, "speaker lock alloc failed");    /* 失败报错 */
     s_tts_request_lock = xSemaphoreCreateMutex();   /* 创建 TTS 请求互斥锁 */
+    s_spk.ring_lock = xSemaphoreCreateMutex(); /* ring 生命周期锁（喂入 vs 删除，崩溃修复） */
     ESP_RETURN_ON_FALSE(s_tts_request_lock, ESP_ERR_NO_MEM, TAG, "tts request lock alloc failed");  /* 失败报错 */
     gw_client_set_msg_handler(gw_msg_handler);      /* 步骤 2：注册网关消息处理器（ASR 结果） */
     gw_client_set_binary_handler(gw_tts_pcm_cb);    /* 步骤 3：注册 PCM 帧处理器（漏注册=喂 ring 0B，2026-09-12 实测） */
@@ -1130,15 +1159,15 @@ void voice_pipeline_barge_in(void)
     if (s_spk.ring == NULL) {                       /* 没有播报在进行 */
         return;
     }
+    /* 崩溃根因修复（2026-09-12）：本函数在 LVGL 任务被调，原版在此循环
+     * xStreamBufferReset(ring)，与管线任务"等 player_done → 删 ring"竞争
+     * use-after-free——按下按钮即崩。现在只置标志 + 通知网关：abort 让
+     * 播放器 ≤40ms 自退、WS 帧丢弃，ring 删除全部由管线任务持锁做。 */
     ESP_LOGI(TAG, "打断！停止播报");                /* 日志 */
     s_spk.abort = true;                             /* 播放器立即退出（残帧丢弃） */
     s_spk.synth_done = true;
-    s_gw_tts_end = false;
     xEventGroupSetBits(s_vp.evt, EVT_TTS_DONE);     /* 唤醒等待方（尽快收尾本轮） */
     gw_client_send_text("{\"type\":\"tts_cancel\"}");        /* 通知网关停止合成推流 */
-    while (xStreamBufferReset(s_spk.ring) != pdPASS) {      /* 丢弃未播残帧 */
-        vTaskDelay(pdMS_TO_TICKS(2));               /* 播放器 40ms 粒度阻塞，很快让出 */
-    }
 }
 
 void voice_pipeline_set_vad(bool on)
