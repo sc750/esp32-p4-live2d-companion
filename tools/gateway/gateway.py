@@ -29,6 +29,7 @@ import urllib.parse
 from urllib.parse import urlencode
 
 import websockets
+import aiohttp
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,6 +49,13 @@ XFYUN_URL = "wss://iat-api.xfyun.cn/v2/iat"
 
 # 讯飞帧规格：推荐 1280B/帧（40ms），设备 3200B/帧需重切
 XFYUN_FRAME_BYTES = 1280
+
+# 豆包 TTS（V3 HTTP chunked 单向流式，与设备端 doubao_tts 同一接口；
+# 网关请求 pcm 裸流——局域网带宽充裕，设备端免解码直接喂播放器）
+DOUBAO_TTS_URL = "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
+DOUBAO_API_KEY = "REDACTED_DOUBAO_KEY"
+DOUBAO_RESOURCE = "seed-tts-2.0"
+DOUBAO_VOICE = "zh_female_vv_uranus_bigtts"
 
 
 def xfyun_auth_url() -> str:
@@ -191,6 +199,8 @@ class DeviceSession:
                 await self.send({"type": "asr_error", "data": f"stop: {e}"})
             finally:
                 self.asr = None                         # 会话已消费/作废，必须清引用
+        elif mtype == "tts":                            # 步骤 3：TTS 下行
+            asyncio.create_task(self.run_tts(data))
         elif mtype == "text":
             log.info("设备文本: %s", data)
             await self.send({"type": "echo", "data": data})
@@ -200,6 +210,58 @@ class DeviceSession:
     async def handle_binary(self, pcm: bytes):
         if self.asr:                                    # 仅会话内的音频帧有效
             await self.asr.feed(pcm)
+
+    async def run_tts(self, text: str):
+        """豆包流式 TTS：整段文本 → chunked PCM 块逐帧推回设备，完成发 tts_end。"""
+        if not text:
+            await self.send({"type": "tts_end"})
+            return
+        headers = {
+            "X-Api-Key": DOUBAO_API_KEY,
+            "X-Api-Resource-Id": DOUBAO_RESOURCE,
+        }
+        body = {
+            "user": {"uid": "sanjiu_esp32p4"},
+            "req_params": {
+                "text": text,
+                "speaker": DOUBAO_VOICE,
+                "audio_params": {"format": "pcm", "sample_rate": 24000, "channel": 1},
+            },
+        }
+        t0 = asyncio.get_event_loop().time()
+        first = True
+        try:
+            async with aiohttp.ClientSession() as http:
+                async with http.post(DOUBAO_TTS_URL, json=body,
+                                     headers=headers,
+                                     timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                    if resp.status != 200:
+                        log.error("豆包 TTS HTTP %d: %.200s", resp.status,
+                                  (await resp.text())[:200])
+                        await self.send({"type": "tts_end"})
+                        return
+                    buf = b""
+                    async for chunk in resp.content.iter_any():
+                        buf += chunk
+                        while b"\n" in buf:                 # 按行切（JSON 行式）
+                            line, buf = buf.split(b"\n", 1)
+                            if not line.strip():
+                                continue
+                            msg = json.loads(line)
+                            code = msg.get("code", 0)
+                            if code != 0 and code != 20000000:
+                                log.error("豆包 TTS 错误 %s: %s", code, msg.get("message"))
+                                raise RuntimeError(f"doubao {code}")
+                            data = msg.get("data")
+                            if data:                        # base64 PCM 块 → 二进制推回
+                                if first:
+                                    log.info("TTS 首块延迟 %.0f ms",
+                                             (asyncio.get_event_loop().time() - t0) * 1000)
+                                    first = False
+                                await self.ws.send(base64.b64decode(data))
+        except Exception as e:
+            log.error("TTS 流失败: %r", e)
+        await self.send({"type": "tts_end"})                # 成功失败都收尾（防设备卡等）
 
     async def _abort_asr(self):
         asr, self.asr = self.asr, None

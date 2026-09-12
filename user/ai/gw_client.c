@@ -42,6 +42,7 @@ static struct {
     esp_websocket_client_handle_t client;       /* WS 客户端句柄 */
     volatile bool connected;                    /* 当前连接状态 */
     void (*msg_cb)(const char *type, const char *data);         /* 文本消息处理器 */
+    void (*bin_cb)(const uint8_t *pcm, size_t bytes);           /* 二进制帧处理器（TTS PCM） */
 } s_gw;
 
 /** WS 事件回调：连接/断开/收数据 */
@@ -64,8 +65,17 @@ static void gw_event_handler(void *arg, esp_event_base_t base,
         s_gw.connected = false;
         break;
     case WEBSOCKET_EVENT_DATA: {
-        if (ev->data_len <= 0 || ev->op_code != 0x01) {
-            break;                              /* 非文本帧/空帧：二进制步骤 2 才有 */
+        if (ev->data_len <= 0) {
+            break;                                      /* 空帧忽略 */
+        }
+        if (ev->op_code == 0x02) {                      /* 二进制帧：TTS PCM（步骤 3） */
+            if (s_gw.bin_cb) {
+                s_gw.bin_cb((const uint8_t *)ev->data_ptr, (size_t)ev->data_len);
+            }
+            break;
+        }
+        if (ev->op_code != 0x01) {
+            break;                                      /* 其他 opcode 忽略 */
         }
         int len = ev->data_len;
         if (len > 512) {
@@ -153,4 +163,9 @@ esp_err_t gw_client_send_binary(const void *data, size_t len)
 void gw_client_set_msg_handler(void (*cb)(const char *type, const char *data))
 {
     s_gw.msg_cb = cb;                                   /* 注册/注销消息处理器 */
+}
+
+void gw_client_set_binary_handler(void (*cb)(const uint8_t *pcm, size_t bytes))
+{
+    s_gw.bin_cb = cb;                                   /* 注册/注销二进制帧处理器 */
 }

@@ -26,6 +26,7 @@
 #include "esp_check.h"          /* ESP_RETURN_ON_* 检查宏 */
 #include "esp_timer.h"          /* esp_timer_get_time（延迟量化/节流） */
 #include "esp_heap_caps.h"      /* heap_caps_realloc（短语 PCM 扩容） */
+#include "cJSON.h"              /* 网关 tts 消息组包 */
 #include "freertos/FreeRTOS.h"          /* FreeRTOS 基础 */
 #include "freertos/task.h"              /* 任务创建 */
 #include "freertos/event_groups.h"      /* 事件组（按住说话沿） */
@@ -53,6 +54,26 @@
 #define EVT_HOLD_START  BIT0    /* 按下沿：开始录音 */
 #define EVT_HOLD_STOP   BIT1    /* 松开沿：停止录音并走管线 */
 #define EVT_ASR_RESULT  BIT2    /* 网关流式 ASR 结果到达（步骤 2） */
+#define EVT_TTS_DONE    BIT3    /* 网关 TTS 推流结束（步骤 3） */
+
+/* 串口文本播报的播放状态（ring buffer + 重采样残样 + 诊断计数）。
+ * 定义提前到 process_wav 之前——网关 TTS 路径（步骤 3）在 process_wav
+ * 里直接复用 ring/player， Late 定义会编译不过 */
+static struct {
+    StreamBufferHandle_t ring;      /* 流缓冲句柄（SSE→播放 解耦） */
+    uint8_t *ring_mem;              /* 环形缓冲存储（PSRAM） */
+    StaticStreamBuffer_t ring_ctl;  /* 静态创建的控制块 */
+    volatile bool synth_done;       /* TTS 拉流结束 */
+    volatile bool player_done;      /* 播放任务排空退出 */
+    volatile bool player_started;   /* 预缓冲足够后才启动播放 */
+    volatile uint32_t underflows;   /* 诊断：播放时缓冲耗尽次数 */
+    volatile uint32_t send_failures;/* 诊断：SSE 塞缓冲失败次数 */
+    uint32_t max_feed_gap_ms;       /* 诊断：SSE 块间最大间隔 */
+    int64_t last_feed_us;           /* 上次喂缓冲时刻 */
+    int16_t resample_tail[3];       /* 24k 源 PCM 不足三帧时跨 SSE 块续上 */
+    size_t resample_tail_count;     /* 残样数量 */
+} s_spk;
+
 
 /* 流式字幕刷新节流：两个 token 之间至少隔 100ms 才刷一次 LVGL */
 #define FLUSH_MIN_US    (100 * 1000)
@@ -68,14 +89,24 @@ static struct {
 /* ---- 网关流式 ASR（步骤 2）：音频边录边上送，松手只等识别收尾 ---- */
 static volatile bool s_use_gw_asr;      /* 本轮是否走网关 ASR（录音开始时按连接状态决定） */
 static char *s_gw_asr_text = NULL;      /* 网关识别文本（WS 任务写入，管线任务取走并释放） */
+static volatile bool s_gw_tts_end;      /* 网关 TTS 推流结束标志（WS 任务置位） */
 
-/** 网关文本消息处理器（WS 客户端任务上下文）：asr_result → 置事件位 */
+/* 前置声明（定义在文件后段，网关播报路径先用到） */
+static void on_tts_audio(const int16_t *pcm, size_t samples, void *ctx);
+static esp_err_t spk_ring_begin(void);
+static void gw_tts_pcm_cb(const uint8_t *pcm, size_t bytes);
+static void player_task(void *arg);
+
+/** 网关文本消息处理器（WS 客户端任务上下文）：asr_result/tts_end → 置事件位 */
 static void gw_msg_handler(const char *type, const char *data)
 {
     if (strcmp(type, "asr_result") == 0) {              /* 识别结果到达 */
         free(s_gw_asr_text);                            /* 丢弃上一轮残留 */
         s_gw_asr_text = (data && data[0]) ? strdup(data) : NULL;        /* 拷贝（空结果=NULL） */
         xEventGroupSetBits(s_vp.evt, EVT_ASR_RESULT);   /* 唤醒等待方 */
+    } else if (strcmp(type, "tts_end") == 0) {          /* 网关 TTS 推流结束（步骤 3） */
+        s_gw_tts_end = true;                            /* 管线任务据它置 synth_done */
+        xEventGroupSetBits(s_vp.evt, EVT_TTS_DONE);     /* 唤醒等待方 */
     }
 }
 
@@ -497,17 +528,60 @@ static void process_wav(char *wav, size_t wav_len)
     s_reply_last_flush_us = esp_timer_get_time();       /* 字幕节流基准复位 */
     /* 豆包启用时走环形缓冲真流式整句播报（边合成边播，首声 ~1s）；
      * 按句流水线对豆包无意义（TLS 锁下 TTS 本来就要等 LLM 结束）。 */
-    bool db_stream = doubao_tts_configured();
+    bool gw_tts = gw_client_is_connected();             /* 步骤 3：网关 TTS 下行可用 */
     char *reply = dialog_ask_stream(text, on_reply_token,
-                                    db_stream ? NULL : on_reply_sentence, NULL);        /* 流式对话 */
+                                    gw_tts ? NULL : on_reply_sentence, NULL);   /* 流式对话 */
     free(text);                                         /* 识别文本用完释放 */
     if (reply) {                                        /* LLM 回复成功 */
         ui_text(reply);                                 /* 字幕显示完整回复 */
-        if (db_stream) {                                /* 豆包：整句流式播报 */
+        if (gw_tts) {                                   /* 网关流式 TTS（步骤 3）：文本上行，PCM 下行 */
             s_tts_stream_active = false;                /* 未走按句流水线 */
             ui_state(DIALOG_STATE_SPEAKING);            /* 绿点亮起 */
             music_notify_voice_start();                 /* TTS 抢占音乐（与按句路径同语义） */
-            voice_pipeline_speak(reply);                /* 环形缓冲边合成边播（阻塞至播完） */
+            bool played = false;                        /* 本轮是否已成功走网关播报 */
+            if (spk_ring_begin() == ESP_OK) {           /* ring + 播放器就位 */
+                xEventGroupClearBits(s_vp.evt, EVT_TTS_DONE);
+                s_gw_tts_end = false;
+                cJSON *jroot = cJSON_CreateObject();    /* 组 tts 消息（cJSON 转义防中文/引号） */
+                cJSON_AddStringToObject(jroot, "type", "tts");
+                cJSON_AddStringToObject(jroot, "data", reply);
+                char *jtxt = cJSON_PrintUnformatted(jroot);
+                cJSON_Delete(jroot);
+                esp_err_t serr = gw_client_send_text(jtxt);     /* 文本上行（触发网关合成） */
+                cJSON_free(jtxt);
+                if (serr == ESP_OK) {                   /* 等网关推流完成（45s 上限） */
+                    EventBits_t bits = xEventGroupWaitBits(s_vp.evt, EVT_TTS_DONE,
+                                                           pdTRUE, pdFALSE,
+                                                           pdMS_TO_TICKS(45000));
+                    if (bits & EVT_TTS_DONE) {          /* 推流完：等播放器排空 ring */
+                        s_spk.synth_done = true;        /* 播放器排空后自退 */
+                        s_gw_tts_end = false;
+                        int wait_ms = 30000;            /* 排空上限（2MB ring ≈ 32s，防御） */
+                        while (!s_spk.player_done && wait_ms > 0) {
+                            vTaskDelay(pdMS_TO_TICKS(50));
+                            wait_ms -= 50;
+                        }
+                        played = true;
+                    } else {                            /* 超时：强制收尾 */
+                        ESP_LOGW(TAG, "网关 TTS 超时");
+                        s_spk.synth_done = true;
+                        s_gw_tts_end = false;
+                        vTaskDelay(pdMS_TO_TICKS(200)); /* 给播放器一点排空时间 */
+                    }
+                }
+                if (s_spk.ring) {                       /* 会话资源清理 */
+                    vStreamBufferDelete(s_spk.ring);
+                    s_spk.ring = NULL;
+                }
+                if (s_spk.ring_mem) {
+                    free(s_spk.ring_mem);
+                    s_spk.ring_mem = NULL;
+                }
+            }
+            if (!played) {                              /* 网关路径失败：回退本地豆包流式 */
+                ESP_LOGW(TAG, "网关 TTS 不可用，回退本地合成");
+                voice_pipeline_speak(reply);            /* 环形缓冲边合成边播（阻塞至播完） */
+            }
         } else {                                        /* MiniMax/MiMo：按句流水线 */
             tts_batch_flush();                          /* 收尾：把没凑满批的尾巴发走 */
             s_tts_input_done = true;                    /* 标记 LLM 输出完毕（不再有新句） */
@@ -553,21 +627,41 @@ static void process_wav(char *wav, size_t wav_len)
 #define SPK_RING_SIZE         (2 * 1024 * 1024) /* 约 32 秒 16kHz/双声道 PCM16 */
 #define SPK_RECV_TIMEOUT_MS   40           /* 播放任务取数据短超时（欠载探测粒度） */
 
-/* 串口文本播报的播放状态（ring buffer + 重采样残样 + 诊断计数） */
-static struct {
-    StreamBufferHandle_t ring;      /* 流缓冲句柄（SSE→播放 解耦） */
-    uint8_t *ring_mem;              /* 环形缓冲存储（PSRAM） */
-    StaticStreamBuffer_t ring_ctl;  /* 静态创建的控制块 */
-    volatile bool synth_done;       /* TTS 拉流结束 */
-    volatile bool player_done;      /* 播放任务排空退出 */
-    volatile bool player_started;   /* 预缓冲足够后才启动播放 */
-    volatile uint32_t underflows;   /* 诊断：播放时缓冲耗尽次数 */
-    volatile uint32_t send_failures;/* 诊断：SSE 塞缓冲失败次数 */
-    uint32_t max_feed_gap_ms;       /* 诊断：SSE 块间最大间隔 */
-    int64_t last_feed_us;           /* 上次喂缓冲时刻 */
-    int16_t resample_tail[3];       /* 24k 源 PCM 不足三帧时跨 SSE 块续上 */
-    size_t resample_tail_count;     /* 残样数量 */
-} s_spk;
+
+/** 网关 TTS PCM 帧（WS 任务上下文）：24k/mono 分块 → 复用 speak 重采样进 ring */
+static void gw_tts_pcm_cb(const uint8_t *pcm, size_t bytes)
+{
+    if (s_spk.ring != NULL && !s_spk.synth_done) {      /* 播放会话进行中才喂 */
+        on_tts_audio((const int16_t *)pcm, bytes / sizeof(int16_t), NULL);
+    }
+}
+
+/** 网关播报的 ring + 播放器初始化（从 voice_pipeline_speak 抽出复用） */
+static esp_err_t spk_ring_begin(void)
+{
+    s_spk.ring_mem = heap_caps_malloc(SPK_RING_SIZE, MALLOC_CAP_SPIRAM);        /* PSRAM 分配 */
+    if (!s_spk.ring_mem) {                          /* 分配失败 */
+        ESP_LOGW(TAG, "播放缓冲（PSRAM）分配失败");
+        return ESP_ERR_NO_MEM;
+    }
+    s_spk.ring = xStreamBufferCreateStatic(SPK_RING_SIZE, 1,        /* 静态创建流缓冲 */
+                                           s_spk.ring_mem, &s_spk.ring_ctl);
+    s_spk.synth_done = false;                       /* 推流未结束 */
+    s_spk.player_done = false;                      /* 播放未完成 */
+    s_spk.player_started = true;                    /* 播放器立即启动（帧到前欠载等待） */
+    s_spk.underflows = 0;                           /* 诊断计数复位 */
+    s_spk.send_failures = 0;
+    s_spk.max_feed_gap_ms = 0;
+    s_spk.last_feed_us = 0;
+    s_spk.resample_tail_count = 0;
+    if (xTaskCreate(player_task, "spk_play", 4 * 1024, NULL, 5, NULL) != pdPASS) {
+        free(s_spk.ring_mem);                       /* 任务创建失败回滚 */
+        s_spk.ring_mem = NULL;
+        s_spk.ring = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
 
 /** 串口播报的播放任务：从 ring 取 PCM 喂 codec，排空且拉流结束才退出 */
 static void player_task(void *arg)

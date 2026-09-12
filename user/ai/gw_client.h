@@ -42,9 +42,15 @@ esp_err_t gw_client_send_binary(const void *data, size_t len);
 
 /**
  * @brief 注册网关文本消息处理器（在 WS 客户端任务上下文执行，勿阻塞）
- * @param cb ("type","data")；NULL 注销。type/data 指针仅当次调用有效
+ * @param cb ("type","data")；NULL 注销。指针仅当次调用有效，消费方同步拷贝
  */
 void gw_client_set_msg_handler(void (*cb)(const char *type, const char *data));
+
+/**
+ * @brief 注册二进制帧处理器（步骤 3：网关 TTS PCM 下行；勿阻塞）
+ * @param cb (PCM 字节指针, 字节数)——24k/16bit/mono 裸流分块；NULL 注销
+ */
+void gw_client_set_binary_handler(void (*cb)(const uint8_t *pcm, size_t bytes));
 
 #ifdef __cplusplus
 }

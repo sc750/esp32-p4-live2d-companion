@@ -23,6 +23,18 @@
 - 静音场景：网关明确空结果 → 直接「没听清」（跳过本地回退，省 6s）
 - 网关断开自动回退本地 HTTP 识别（降级链验证通过）
 
+## 步骤 3 编辑清单（2026-09-12）
+
+| 文件 | 改动 | 结果 |
+|---|---|---|
+| tools/gateway/gateway.py | run_tts：豆包 V3 chunked（format=pcm 24k，aiohttp 流式），base64 解码后二进制帧推回，tts_end 收尾 | ✅ |
+| user/ai/gw_client.c/.h | 二进制帧（op_code 0x02）分发 → set_binary_handler | ✅ |
+| user/ai/voice_pipeline.c | spk_ring_begin（ring+播放器初始化抽出复用）；EVT_TTS_DONE；process_wav 网关分支：tts 文本上行→PCM 帧喂 ring→排空→清理；失败回退本地豆包 | ✅ |
+
+### 实测证据
+- 模拟设备协议测试：tts 请求 → 首帧 PCM 561ms → 9 帧 152KB（≈4.8s 音频）927ms 推完 → tts_end
+- 设备侧待语音实测（serial chat 走直连文本通道不经过 process_wav，故串口 chat 不触发网关 TTS）
+
 ## 构建证据（2026-09-12）
 - 端到端：板上 gw send → 网关「设备文本: hello-gateway-step1」→ 网关 echo →
   板上「网关→: {"type":"echo",...}」；断线（1006）后 3s 自动重连握手
