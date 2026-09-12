@@ -16,6 +16,7 @@
 #define VOICE_PIPELINE_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -36,6 +37,15 @@ void voice_pipeline_set_ui(const voice_ui_cb_t *cb);
 
 /** 按住说话：按下沿（非阻塞，录制在内部任务中进行） */
 void voice_pipeline_hold_start(void);
+
+/** 打断当前播报（barge-in）：三玖说话时调用——立即停播+通知网关取消+可立即录音 */
+void voice_pipeline_barge_in(void);
+
+/** VAD 连续对话模式开关（步骤 5）：播完自动续听、说完静音自动断句 */
+void voice_pipeline_set_vad(bool on);
+
+/** VAD 人声 RMS 阈值调节（环境噪声大时上调；默认 250） */
+void voice_pipeline_set_vad_thresh(int thresh);
 
 /** 按住说话：松开沿（停止录音并走完 ASR+LLM 管线） */
 void voice_pipeline_hold_stop(void);

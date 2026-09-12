@@ -108,7 +108,7 @@ class AsrSession:
         first = {
             "common": {"app_id": XFYUN_APP_ID},
             "business": {"language": "zh_cn", "domain": "iat",
-                         "accent": "mandarin", "vad_eos": 10000},
+                         "accent": "mandarin", "vad_eos": 3000},   # 静音 3s 自动收尾（默认 10s 太慢）
             "data": {"status": 0, "format": "audio/L16;rate=16000",
                      "encoding": "raw", "audio": ""},
         }
@@ -186,12 +186,18 @@ class DeviceSession:
         self.ws = ws                     # 设备侧连接
         self.asr: AsrSession | None = None
         self.send_lock = asyncio.Lock()  # LLM/TTS 多任务并发推送：所有发送串行化
+        self.tts_cancel = False         # 设备打断：停止 TTS 推流
 
     async def send(self, obj):
         # dict → JSON；str/bytes 原样。加锁防并发 send 帧交错。
+        # 设备断连时 send 会抛 ConnectionClosedError——吞掉只记日志，
+        # 否则会把 run_chat/tts_worker 等会话任务整个带崩（2026-09-12 实测）。
         data = json.dumps(obj) if isinstance(obj, (dict, list)) else obj
-        async with self.send_lock:
-            await self.ws.send(data)
+        try:
+            async with self.send_lock:
+                await self.ws.send(data)
+        except Exception as e:
+            log.warning('发送失败（设备可能已断开）: %r', e)
 
     async def handle_text(self, message: str):
         try:
@@ -233,6 +239,9 @@ class DeviceSession:
                 self.asr = None                         # 会话已消费/作废，必须清引用
         elif mtype == "tts":                            # 步骤 3：TTS 下行
             asyncio.create_task(self.run_tts(data))
+        elif mtype == "tts_cancel":                     # 步骤 5：设备打断 TTS
+            self.tts_cancel = True
+            log.info("收到设备打断请求")
         elif mtype == "chat":                           # 步骤 4：LLM+TTS 全流水线
             asyncio.create_task(self.run_chat(msg))
         elif mtype == "text":
@@ -247,6 +256,8 @@ class DeviceSession:
 
     async def stream_doubao(self, text: str):
         """豆包流式合成一段文本：chunked PCM 块逐帧推回设备（不收尾）。"""
+        if self.tts_cancel:                             # 已被打断：不再开始
+            return
         headers = {
             "X-Api-Key": DOUBAO_API_KEY,
             "X-Api-Resource-Id": DOUBAO_RESOURCE,
@@ -267,6 +278,9 @@ class DeviceSession:
                                        f"{(await resp.text())[:150]}")
                 buf = b""
                 async for chunk in resp.content.iter_any():
+                    if self.tts_cancel:                     # 设备打断：停止拉流
+                        log.info("TTS 被设备打断，停止拉流")
+                        return
                     buf += chunk
                     while b"\n" in buf:                     # 按行切（JSON 行式）
                         line, buf = buf.split(b"\n", 1)
@@ -283,6 +297,7 @@ class DeviceSession:
 
     async def run_tts(self, text: str):
         """步骤 3 入口：整段文本流式合成，完成发 tts_end。"""
+        self.tts_cancel = False                         # 新会话复位打断标志
         if not text:
             await self.send({"type": "tts_end"})
             return
@@ -302,6 +317,7 @@ class DeviceSession:
 
     async def run_chat(self, msg: dict):
         """步骤 4：流式 LLM → 断句 → 逐句豆包流式（LLM 生成与 TTS 合成真并行）。"""
+        self.tts_cancel = False                         # 新会话复位打断标志
         messages = [{"role": "system", "content": msg.get("sys", "")}]
         messages += msg.get("history", [])
         messages.append({"role": "user", "content": msg.get("text", "")})
@@ -359,13 +375,17 @@ class DeviceSession:
                 sent = await q.get()
                 if sent is None:
                     break
+                if self.tts_cancel:                     # 被打断：跳过剩余句子
+                    break
                 t0 = asyncio.get_event_loop().time()
                 try:
                     await self.stream_doubao(sent)
                     log.info("句 TTS 完成 (%.0f ms): %.30s",
                              (asyncio.get_event_loop().time() - t0) * 1000, sent)
                 except Exception as e:
-                    log.error("句 TTS 失败: %r", e)          # 单句失败不拖垮整段
+                    if self.tts_cancel:                 # 打断引发的推流中止：不报错
+                        break
+                    log.error("句 TTS 失败: %r", e)      # 单句失败不拖垮整段
 
         worker = asyncio.create_task(tts_worker())
         await llm_stream()                                  # LLM 完成后 reply_done 已发

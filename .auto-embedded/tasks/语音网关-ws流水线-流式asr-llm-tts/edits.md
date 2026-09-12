@@ -50,6 +50,21 @@
 ### 预期板上效果
 松手 → ASR 1.3s → LLM 首句+TTS 首包（网关并行 ~2s）→ 首声 ≈ 3.5s（对比直连版 25-35s）
 
+## 步骤 5 编辑清单（2026-09-12）
+
+| 文件 | 改动 | 结果 |
+|---|---|---|
+| user/ai/voice_pipeline.c | barge-in（abort 标志+播放器立即退出+ring 重置+tts_cancel 上行+等待方唤醒）；VAD 连续模式（能量 RMS 阈值 250 人声检测，说完静音 800ms 自动断句，8s 无声自动收，静音轮跳过 ASR 等待，播完自动续听）；set_vad/set_vad_thresh API；record_ms 统一循环 | ✅ |
+| user/ai/gw_client.c | 二进制大帧重组（payload_offset/payload_len，豆包 48KB PCM 块被组件切片问题） | ✅ |
+| tools/gateway/gateway.py | tts_cancel 消息（打断停止拉流/跳过剩余句）；send 失败吞异常（断连不崩会话任务）；vad_eos 10000→3000（静音会话 3s 收尾）；AsrSession 握手重试+早期帧缓存 | ✅ |
+| user/main_app.c | 按住说话按钮按下即调 voice_pipeline_barge_in（按钮打断） | ✅ |
+| user/ai/chat_console.c | vad on/off/th <n> 命令 | ✅ |
+
+### 实测证据
+- 静音轮：6.5s 无人声自动收 → 「VAD 静音轮：无人声，直接续听」（不回退不白等）
+- 网关 TTS 协议复测：首帧 677ms（修复后）
+- 待用户实测：按钮打断体验 / VAD 连续对话真实说话轮
+
 ## 构建证据（2026-09-12）
 - 端到端：板上 gw send → 网关「设备文本: hello-gateway-step1」→ 网关 echo →
   板上「网关→: {"type":"echo",...}」；断线（1006）后 3s 自动重连握手
