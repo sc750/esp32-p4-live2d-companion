@@ -85,6 +85,7 @@ static QueueHandle_t s_tts_queue;       /* 句子队列：LLM 断句 → TTS 拉
 static QueueHandle_t s_tts_ready_queue; /* 就绪队列：TTS 拉流 → 播放任务（指针传递） */
 static volatile uint32_t s_tts_pending; /* 已入队未播完的句子数（原子加减） */
 static volatile bool s_tts_input_done;  /* LLM 输出结束标志（全部句子已入队） */
+static volatile bool s_tts_cancel;      /* 音乐点播抢占：未播 TTS 全部丢弃（三处闸门共用） */
 static volatile int64_t s_t_release = 0;        /* M3 延迟量化：松手时刻 */
 static volatile int64_t s_t_first_sentence = 0; /* M3 延迟量化：LLM 首句时刻 */
 static volatile bool s_tts_stream_active;       /* 按句 TTS 流水线活动标志 */
@@ -142,6 +143,9 @@ static void on_reply_sentence(const char *sentence, void *ctx)
     }
     if (p[0] == '\0' || !s_tts_queue) {                 /* 全空白或管线未初始化 */
         return;                                         /* 直接忽略 */
+    }
+    if (s_tts_cancel) {                                 /* 用户已显式点播音乐 */
+        return;                                         /* 本句及其后句子一律不入队 */
     }
     /* M3 延迟量化：LLM 首句耗时（只记一次） */
     if (s_t_first_sentence == 0) {                      /* 首句只记一次时刻 */
@@ -229,6 +233,12 @@ static void tts_play_task(void *arg)
         if (xQueueReceive(s_tts_ready_queue, &phrase, portMAX_DELAY) != pdPASS) {       /* 阻塞等短语 */
             continue;                                   /* 队列异常时继续下一轮 */
         }
+        if (s_tts_cancel) {                             /* 音乐点播抢占：丢弃未播短语 */
+            free(phrase->pcm);                          /* 释放 PCM */
+            free(phrase);                               /* 释放控制块 */
+            __atomic_fetch_sub(&s_tts_pending, 1, __ATOMIC_RELAXED);    /* 未播计数 -1 */
+            continue;                                   /* 取下一条（同样会被丢弃） */
+        }
         xSemaphoreTake(s_speak_lock, portMAX_DELAY);    /* 拿扬声器互斥锁（防两路同时播） */
         /* Phase4：TTS 抢占音乐（PRD M10 方案 A）——第一句播出前停掉音乐并等其
          * 恢复 16k 采样率（音乐播放时 I2S 可能切在 44.1k/48k，直接播 TTS 会变调）。
@@ -242,6 +252,10 @@ static void tts_play_task(void *arg)
             size_t chunk = phrase->len - offset;        /* 剩余字节数 */
             if (chunk > 4096) {                         /* 每次 4KB 喂 codec */
                 chunk = 4096;                           /* 限块大小（DMA 友好） */
+            }
+            if (s_tts_cancel) {                         /* 中途被音乐点播打断：立即停口 */
+                ESP_LOGI(TAG, "TTS 播报被音乐点播打断");  /* 诊断日志 */
+                break;                                  /* 跳出写循环（下方统一释放） */
             }
             update_mouth_from_pcm((const int16_t *)(phrase->pcm + offset),      /* 用本块能量驱动口型 */
                                   chunk / sizeof(int16_t)); /* 样本数换算 */
@@ -271,6 +285,10 @@ static void tts_stream_task(void *arg)
     while (1) {                                         /* 拉流任务常驻循环 */
         if (xQueueReceive(s_tts_queue, &item, portMAX_DELAY) != pdPASS) {       /* 阻塞等句子 */
             continue;                                   /* 队列异常时继续下一轮 */
+        }
+        if (s_tts_cancel) {                             /* 音乐点播抢占：不再请求合成 */
+            __atomic_fetch_sub(&s_tts_pending, 1, __ATOMIC_RELAXED);    /* 未播计数 -1 */
+            continue;                                   /* 取下一句（同样会被丢弃） */
         }
         tts_pcm_phrase_t *phrase = calloc(1, sizeof(*phrase));  /* 分配短语控制块（清零） */
         if (!phrase) {                                  /* 控制块分配失败 */
@@ -347,6 +365,7 @@ static void process_wav(char *wav, size_t wav_len)
     s_reply_text[0] = '\0';                             /* 回复缓冲清空 */
     __atomic_store_n(&s_tts_pending, 0, __ATOMIC_RELAXED);      /* 未播计数清零 */
     s_tts_input_done = false;                           /* LLM 输入未完成标志 */
+    s_tts_cancel = false;                               /* 复位取消闸门（上轮音乐抢占遗留） */
     s_tts_stream_active = true;                         /* 按句 TTS 流水线激活 */
     s_reply_last_flush_us = esp_timer_get_time();       /* 字幕节流基准复位 */
     char *reply = dialog_ask_stream(text, on_reply_token, on_reply_sentence, NULL);     /* 流式对话 */
@@ -577,6 +596,26 @@ void voice_pipeline_speak(const char *text)
         ui_state(DIALOG_STATE_IDLE);                /* 状态点熄灭 */
     }
     xSemaphoreGive(s_speak_lock);                   /* 释放播报锁 */
+}
+
+void voice_pipeline_tts_cancel(void)
+{
+    /* 音乐页显式点播的抢占入口：三处闸门（入队/拉流/播放）见 s_tts_cancel，
+     * 标志保持置位直到下一轮对话在 process_wav 里复位——这期间即使
+     * 在途的 TTS 请求姗姗来迟，短语也会在播放任务门口被丢弃并释放。 */
+    s_tts_cancel = true;                                /* 立闸门 */
+    if (s_tts_queue != NULL) {                          /* 句子队列：值拷贝，直接清 */
+        xQueueReset(s_tts_queue);
+    }
+    if (s_tts_ready_queue != NULL) {                    /* 就绪队列：堆指针，逐个释放防泄漏 */
+        tts_pcm_phrase_t *phrase = NULL;                /* 待释放短语 */
+        while (xQueueReceive(s_tts_ready_queue, &phrase, 0) == pdPASS) {
+            free(phrase->pcm);                          /* 释放 PCM */
+            free(phrase);                               /* 释放控制块 */
+            __atomic_fetch_sub(&s_tts_pending, 1, __ATOMIC_RELAXED);    /* 未播计数 -1 */
+        }
+    }
+    ESP_LOGI(TAG, "TTS 未播内容已全部取消（音乐点播）"); /* 诊断日志 */
 }
 
 /* ---------- 两个入口 ---------- */

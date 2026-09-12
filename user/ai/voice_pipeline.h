@@ -47,6 +47,15 @@ void voice_pipeline_hold_stop(void);
 esp_err_t voice_pipeline_record_ms(uint32_t ms);
 
 /**
+ * @brief 取消全部未播完的 TTS（音乐点播抢占，非阻塞、任意任务可调）
+ *
+ * 清空句子队列与就绪队列（就地释放堆内存），并在途/未入队的后续短语
+ * 一律丢弃；正在播的一句会在下一个 4KB 块边界立即停口。
+ * 下一轮对话（hold/record/speak）开始时自动复位。
+ */
+void voice_pipeline_tts_cancel(void);
+
+/**
  * @brief 播报一句话（M2：TTS 流式 + 口型同步；阻塞至播完）
  *
  * 绿点（SPEAKING）期间拉取 MiMo TTS（24k/mono pcm16）连播扬声器，

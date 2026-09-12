@@ -168,24 +168,50 @@ static void create_top_bar(lv_obj_t *parent)
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);                 /* 不滚动 */
 
     /* --- 左：返回按钮 --- */
+    /* 图标/文字拆成两个 label（2026-09-12 上板实测豆腐块）：nino_cjk_16
+     * 是纯 CJK 字库，不含 LVGL 的 FontAwesome 符号区，LV_SYMBOL_LEFT
+     * 混排进去就是"□ 返回"。符号走 Montserrat（内置含符号区），与
+     * scr_home 麦克风按钮同一套做法。 */
     s_music.back_btn = lv_button_create(bar);                       /* 建按钮 */
     lv_obj_set_size(s_music.back_btn, 96, 40);                      /* 尺寸 */
     lv_obj_set_style_bg_color(s_music.back_btn, colors->card_bg, 0);    /* 卡片底色 */
     lv_obj_set_style_radius(s_music.back_btn, 20, 0);               /* 圆角胶囊 */
     lv_obj_set_style_shadow_width(s_music.back_btn, 0, 0);          /* 去阴影 */
+    lv_obj_set_style_pad_all(s_music.back_btn, 0, 0);               /* 内边距归零（flex 居中接管） */
+    lv_obj_set_flex_flow(s_music.back_btn, LV_FLEX_FLOW_ROW);       /* 图标+文字横排 */
+    lv_obj_set_flex_align(s_music.back_btn, LV_FLEX_ALIGN_CENTER,   /* 整体居中 */
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(s_music.back_btn, 6, 0);            /* 图标与文字间距 */
     lv_obj_add_event_cb(s_music.back_btn, on_back_clicked,          /* 点击 → 返回 */
                         LV_EVENT_CLICKED, NULL);
+    lv_obj_t *back_icon = lv_label_create(s_music.back_btn);        /* 左箭头图标 */
+    lv_label_set_text(back_icon, LV_SYMBOL_LEFT);                   /* ◀（Montserrat 符号区） */
+    lv_obj_set_style_text_color(back_icon, colors->text_color, 0);  /* 图标色 */
+    lv_obj_set_style_text_font(back_icon, &lv_font_montserrat_16, 0);   /* 含符号的内置字体 */
     lv_obj_t *back_txt = lv_label_create(s_music.back_btn);         /* 按钮文字 */
-    lv_label_set_text(back_txt, LV_SYMBOL_LEFT " 返回");             /* 左箭头 + 返回 */
+    lv_label_set_text(back_txt, "返回");                             /* 纯文字（CJK 字库覆盖内） */
     lv_obj_set_style_text_color(back_txt, colors->text_color, 0);   /* 文字色 */
     lv_obj_set_style_text_font(back_txt, nino_font_cjk16(), 0);     /* 中文字体 */
-    lv_obj_center(back_txt);                                        /* 居中 */
 
-    /* --- 中：标题 --- */
-    lv_obj_t *title = lv_label_create(bar);                         /* 标题文字 */
-    lv_label_set_text(title, LV_SYMBOL_AUDIO " 音乐");               /* 音符图标 + 音乐 */
-    lv_obj_set_style_text_color(title, colors->text_color, 0);      /* 文字色 */
-    lv_obj_set_style_text_font(title, nino_font_cjk16(), 0);        /* 中文字体 */
+    /* --- 中：标题（容器横排：音符图标 + 音乐） --- */
+    lv_obj_t *title_box = lv_obj_create(bar);                       /* 标题容器（占一个 flex 位） */
+    lv_obj_set_size(title_box, 64, 20);                             /* 显式尺寸（9.4 不用 LV_SIZE_CONTENT） */
+    lv_obj_set_style_bg_opa(title_box, LV_OPA_TRANSP, 0);           /* 透明 */
+    lv_obj_set_style_border_width(title_box, 0, 0);                 /* 无边框 */
+    lv_obj_set_style_pad_all(title_box, 0, 0);                      /* 内边距归零 */
+    lv_obj_set_flex_flow(title_box, LV_FLEX_FLOW_ROW);              /* 图标+文字横排 */
+    lv_obj_set_flex_align(title_box, LV_FLEX_ALIGN_CENTER,          /* 整体居中 */
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(title_box, 6, 0);                   /* 间距 */
+    lv_obj_clear_flag(title_box, LV_OBJ_FLAG_SCROLLABLE);           /* 不滚动 */
+    lv_obj_t *title_icon = lv_label_create(title_box);              /* 音符图标 */
+    lv_label_set_text(title_icon, LV_SYMBOL_AUDIO);                 /* ♪（Montserrat 符号区） */
+    lv_obj_set_style_text_color(title_icon, colors->text_color, 0); /* 图标色 */
+    lv_obj_set_style_text_font(title_icon, &lv_font_montserrat_16, 0);  /* 含符号的内置字体 */
+    lv_obj_t *title_txt = lv_label_create(title_box);               /* 标题文字 */
+    lv_label_set_text(title_txt, "音乐");                            /* 纯文字（CJK 字库覆盖内） */
+    lv_obj_set_style_text_color(title_txt, colors->text_color, 0);  /* 文字色 */
+    lv_obj_set_style_text_font(title_txt, nino_font_cjk16(), 0);    /* 中文字体 */
 
     /* --- 右：播放状态 --- */
     s_music.status_label = lv_label_create(bar);                    /* 状态文字 */
@@ -225,8 +251,11 @@ static void create_main_area(lv_obj_t *parent)
     lv_obj_set_style_text_font(s_music.pos_label, nino_font_cjk16(), 0);         /* 中文字体 */
 
     /* --- 按钮行：[⏮] [▶/⏸] [⏭] --- */
+    /* 尺寸必须显式给（LVGL 9.4 坑，2026-09-12 上板实测）：flex 容器的
+     * LV_SIZE_CONTENT 主轴宽度只按"最大子控件"算（本行=84），不算间距
+     * 和其余子项——⏮/⏭ 会被裁剪。64+36+84+36+64=284，高=最大子项84。 */
     lv_obj_t *row = lv_obj_create(area);                            /* 按钮行容器 */
-    lv_obj_set_size(row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);         /* 由内容撑开 */
+    lv_obj_set_size(row, 284, 84);                                  /* 显式尺寸（见上注释） */
     lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);                 /* 透明 */
     lv_obj_set_style_border_width(row, 0, 0);                       /* 无边框 */
     lv_obj_set_style_pad_all(row, 0, 0);                            /* 内边距归零 */
@@ -277,7 +306,7 @@ static void create_main_area(lv_obj_t *parent)
 
     /* --- 音量行：[音量] ──●── [30] --- */
     lv_obj_t *vol_row = lv_obj_create(area);                        /* 音量行容器 */
-    lv_obj_set_size(vol_row, 420, LV_SIZE_CONTENT);                 /* 固定宽，居中 */
+    lv_obj_set_size(vol_row, 420, 20);                              /* 固定宽，高=最大子项（9.4 同坑预防） */
     lv_obj_set_style_bg_opa(vol_row, LV_OPA_TRANSP, 0);             /* 透明 */
     lv_obj_set_style_border_width(vol_row, 0, 0);                   /* 无边框 */
     lv_obj_set_style_pad_all(vol_row, 0, 0);                        /* 内边距归零 */

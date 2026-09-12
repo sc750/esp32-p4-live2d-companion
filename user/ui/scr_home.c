@@ -156,8 +156,13 @@ static void create_status_bar(lv_obj_t *parent)
     /* ---- 右侧组：音乐入口 + 时间 ----
      * 为什么打包成容器：状态栏是 SPACE_BETWEEN 两端对齐，子元素有三个
      * 就会把中间那个顶到屏幕正中——右组两项必须先合成一个对象。 */
+    /* 宽度必须显式给（2026-09-12 上板实测）：LVGL 9.4 对 flex 容器的
+     * LV_SIZE_CONTENT 只按"最大子控件宽"算（本组=56），不算间距和其余
+     * 子项——flex END 对齐会把音乐按钮推到 x=-56 被父容器整体裁剪
+     * （屏上只见时间不见按钮）。模拟器 9.5 算的是 117，板上 9.4 必须
+     * 显式给足：按钮56 + 间距16 + 时间~45 + 余量 = 132。 */
     lv_obj_t *right_group = lv_obj_create(s_home_ui.status_bar);
-    lv_obj_set_size(right_group, LV_SIZE_CONTENT, STATUS_BAR_H);
+    lv_obj_set_size(right_group, 132, STATUS_BAR_H);
     lv_obj_set_style_bg_opa(right_group, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(right_group, 0, 0);
     lv_obj_set_style_pad_all(right_group, 0, 0);
@@ -446,6 +451,37 @@ void scr_home_set_music_entry_cb(void (*cb)(void *ctx), void *ctx)
 {
     s_music_entry_cb = cb;
     s_music_entry_ctx = ctx;
+}
+
+/* 临时调试（音乐入口丢失排查）：吐状态栏各控件实际坐标，查完即删 */
+void scr_home_debug_status_bar(void)
+{
+    lv_obj_t *bar = s_home_ui.status_bar;
+    if (bar == NULL) {
+        ESP_LOGI(TAG, "uix: status_bar 未创建");
+        return;
+    }
+    ESP_LOGI(TAG, "uix: bar=(%d,%d %dx%d) 子数=%d",
+             lv_obj_get_x(bar), lv_obj_get_y(bar),
+             lv_obj_get_width(bar), lv_obj_get_height(bar),
+             lv_obj_get_child_count(bar));
+    for (int32_t i = 0; i < (int32_t)lv_obj_get_child_count(bar); i++) {
+        lv_obj_t *c = lv_obj_get_child(bar, i);
+        ESP_LOGI(TAG, "uix: child[%d]=(%d,%d %dx%d) hidden=%d",
+                 (int)i, lv_obj_get_x(c), lv_obj_get_y(c),
+                 lv_obj_get_width(c), lv_obj_get_height(c),
+                 lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN));
+        for (int32_t j = 0; j < (int32_t)lv_obj_get_child_count(c); j++) {
+            lv_obj_t *g = lv_obj_get_child(c, j);
+            ESP_LOGI(TAG, "uix:   g[%d]=(%d,%d %dx%d) hidden=%d",
+                     (int)j, lv_obj_get_x(g), lv_obj_get_y(g),
+                     lv_obj_get_width(g), lv_obj_get_height(g),
+                     lv_obj_has_flag(g, LV_OBJ_FLAG_HIDDEN));
+        }
+    }
+    ESP_LOGI(TAG, "uix: music_btn=%p hidden=%d",
+             s_home_ui.music_btn,
+             s_home_ui.music_btn ? lv_obj_has_flag(s_home_ui.music_btn, LV_OBJ_FLAG_HIDDEN) : -1);
 }
 
 void scr_home_set_subtitle(const char *text)

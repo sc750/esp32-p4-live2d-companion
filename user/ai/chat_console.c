@@ -29,6 +29,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "scr_home.h"       /* 临时调试：uix 命令吐状态栏坐标 */
+#include "lwip/netdb.h"     /* 临时调试：dns 命令 getaddrinfo */
+#include "lwip/inet.h"      /* 临时调试：dns 命令 inet_ntoa_r */
 #include "memory_store.h"
 #include "diary_service.h"
 #include "music_service.h"
@@ -295,6 +298,31 @@ static void dispatch_line(char *line, size_t len)
     if (len == 5 && strncmp(line, "diary", 5) == 0) {   /* 裸 "diary" 给帮助 */
         exec_diary_cmd("");                             /* 空参数触发用法 */
         return;                                         /* 结束 */
+    }
+    /* 临时调试：uix 吐状态栏坐标（音乐入口丢失排查，查完即删） */
+    if (len == 3 && strncmp(line, "uix", 3) == 0) {
+        scr_home_debug_status_bar();
+        return;
+    }
+    /* 临时调试：dns <host> 看板上域名解析结果（TTS 连不上排查，查完即删） */
+    if (len >= 8 && strncmp(line, "dns ", 4) == 0) {
+        const struct addrinfo hints = { .ai_family = AF_INET };
+        struct addrinfo *res = NULL;
+        int rc = getaddrinfo(line + 4, NULL, &hints, &res);
+        if (rc != 0 || res == NULL) {
+            say("解析失败\r\n");                         /* 结果回显 */
+        } else {
+            for (const struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+                char msg[48];                           /* 单行回显缓冲 */
+                char ip[16] = {0};                      /* 点分十进制缓冲 */
+                struct sockaddr_in *a = (struct sockaddr_in *)ai->ai_addr;
+                inet_ntoa_r(a->sin_addr, ip, sizeof(ip));       /* 转 IP 串 */
+                snprintf(msg, sizeof(msg), "-> %s\r\n", ip);    /* 组行 */
+                say(msg);                               /* 逐条回显 */
+            }
+            freeaddrinfo(res);                          /* 释放链表 */
+        }
+        return;
     }
     /* 命令路由："music" 族（scan/list/play/...） */
     if (len >= 6 && strncmp(line, "music ", 6) == 0) {

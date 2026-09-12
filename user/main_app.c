@@ -200,12 +200,14 @@ static void on_music_back(void *ctx)
 static void on_music_ctrl(int cmd, int arg, void *ctx)
 {
     (void)ctx;
+    /* 显式点播 = 用户此刻要听音乐：先掐掉未播完的 TTS（2026-09-12 上板
+     * 实测：遗留 TTS 短语队列会把音乐反复停掉，听感"一卡一卡"） */
     switch (cmd) {                                              /* UI 枚举 → 业务调用 */
-        case SCR_MUSIC_CMD_PLAY:   music_play_index(arg); break;    /* 播第 arg 首 */
+        case SCR_MUSIC_CMD_PLAY:   voice_pipeline_tts_cancel(); music_play_index(arg); break;   /* 播第 arg 首 */
         case SCR_MUSIC_CMD_PAUSE:  music_pause();        break;     /* 暂停 */
-        case SCR_MUSIC_CMD_RESUME: music_resume();       break;     /* 从暂停继续 */
-        case SCR_MUSIC_CMD_NEXT:   music_next();         break;     /* 下一首/下一台 */
-        case SCR_MUSIC_CMD_PREV:   music_prev();         break;     /* 上一首/上一台 */
+        case SCR_MUSIC_CMD_RESUME: voice_pipeline_tts_cancel(); music_resume();  break; /* 从暂停继续 */
+        case SCR_MUSIC_CMD_NEXT:   voice_pipeline_tts_cancel(); music_next();    break;   /* 下一首/下一台 */
+        case SCR_MUSIC_CMD_PREV:   voice_pipeline_tts_cancel(); music_prev();    break;   /* 上一首/上一台 */
         case SCR_MUSIC_CMD_VOL:    music_set_volume(arg); break;    /* 音量 0~100 */
         default: break;                                             /* 未知命令忽略 */
     }

@@ -29,7 +29,7 @@ extern "C" {
 #define BSP_AUDIO_DEFAULT_SAMPLE_RATE   (16000)
 #define BSP_AUDIO_DEFAULT_BIT_WIDTH     (16)
 #define BSP_AUDIO_DEFAULT_CHANNEL       (2)
-#define BSP_AUDIO_DEFAULT_VOLUME        (30)   /* 输出音量 0~100 */
+#define BSP_AUDIO_DEFAULT_VOLUME        (50)   /* 输出音量 0~100 */
 #define BSP_AUDIO_DEFAULT_ADC_GAIN      (24.0f) /* 麦克风输入增益 dB */
 
 /**
