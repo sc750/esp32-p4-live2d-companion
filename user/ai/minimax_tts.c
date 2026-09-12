@@ -5,8 +5,10 @@
  * 协议要点（官方 OpenAPI 逐条核对）：
  *   - 端点 POST {AI_TTS_MINIMAX_URL}，Authorization: Bearer <key>
  *   - 合成文本放 "text"；音色/语速/情绪放 voice_setting；音频规格放
- *     audio_setting（本模块固定 24000Hz/16bit/mono/pcm 裸流，直推 codec）
- *   - 响应 JSON：data.audio 为 **hex 编码** PCM（每 2 字符 1 字节，
+ *     audio_setting（2026-09-12 起为 24000Hz/64kbps/mono/mp3——pcm 裸流
+ *     再经 hex 编码线上要 96KB/s，Wi-Fi 降级模式常断粮；mp3 砍 6 倍，
+ *     到本地用 esp_audio_simple_dec 解回 PCM，接口不变）
+ *   - 响应 JSON：data.audio 为 hex 编码的 mp3 字节流（每 2 字符 1 字节，
  *     注意与讯飞/MiMo 的 base64 不同！）；base_resp.status_code!=0 为错误
  *
  * @date    2026-09-08
@@ -25,6 +27,9 @@
 #include "cJSON.h"
 
 #include "ai_http.h"
+#include "esp_audio_simple_dec.h"           /* MP3 → PCM 解码（复用音乐服务同款解码器） */
+#include "esp_audio_simple_dec_default.h"   /* 封装解析器注册 */
+#include "esp_audio_dec_default.h"          /* 底层 MP3 解码器注册 */
 
 #define TAG "mm_tts"
 
@@ -81,6 +86,83 @@ static size_t hex_decode(const char *hex, size_t hex_len, uint8_t *out)
     return out_len;                                         /* 返回解码字节数 */
 }
 
+/**
+ * MP3 裸流 → PCM 整段解码（feed 式，与 music_service 同款解码器）。
+ * 输入：MiniMax 返回的 mp3 字节（24kHz mono，64kbps）；输出：int16 mono PCM。
+ * @return ESP_OK 成功；*pcm_out 所有权转移给调用方（heap_caps_free 释放）
+ */
+static esp_err_t mp3_decode_all(const uint8_t *mp3, size_t mp3_len,
+                                int16_t **pcm_out, size_t *samples_out)
+{
+    esp_audio_simple_dec_cfg_t cfg = {                      /* feed 式解码器配置 */
+        .dec_type = ESP_AUDIO_SIMPLE_DEC_TYPE_MP3,          /* MP3 */
+        .dec_cfg = NULL,                                    /* 内置默认参数 */
+        .cfg_size = 0,
+        .use_frame_dec = false,                             /* feed 模式（自动解析帧） */
+    };
+    esp_audio_simple_dec_handle_t dec = NULL;               /* 解码器句柄 */
+    if (esp_audio_simple_dec_open(&cfg, &dec) != ESP_AUDIO_ERR_OK) {
+        ESP_LOGE(TAG, "MP3 解码器打开失败");                 /* 报错 */
+        return ESP_FAIL;
+    }
+
+    /* 64kbps @24kHz 压缩比约 6:1 → 预分配 8 倍余量，不够再翻倍扩容 */
+    size_t pcm_cap = mp3_len * 8;
+    uint8_t *pcm = heap_caps_malloc(pcm_cap, MALLOC_CAP_SPIRAM);    /* PCM 输出（PSRAM） */
+    if (!pcm) {
+        esp_audio_simple_dec_close(dec);
+        return ESP_ERR_NO_MEM;
+    }
+    size_t pcm_len = 0;                                     /* 已解码 PCM 字节 */
+    esp_audio_simple_dec_raw_t raw = {                      /* 输入描述（整段一次给） */
+        .buffer = (uint8_t *)mp3,
+        .len = mp3_len,
+        .eos = true,                                        /* 单段合成：喂入即流结束 */
+        .consumed = 0,
+        .frame_recover = ESP_AUDIO_SIMPLE_DEC_RECOVERY_NONE,
+    };
+    esp_err_t ret = ESP_OK;                                 /* 返回值 */
+    while (1) {                                             /* 解码主循环 */
+        esp_audio_simple_dec_out_t frame = {                /* 输出落点（剩余空间） */
+            .buffer = pcm + pcm_len,
+            .len = pcm_cap - pcm_len,
+            .needed_size = 0,
+            .decoded_size = 0,
+        };
+        esp_audio_err_t dr = esp_audio_simple_dec_process(dec, &raw, &frame);
+        if (dr == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {          /* PCM 缓冲不够 */
+            pcm_cap = pcm_len + frame.needed_size;          /* 按需求扩容（同 music_service 模式） */
+            uint8_t *nb = heap_caps_realloc(pcm, pcm_cap, MALLOC_CAP_SPIRAM);
+            if (!nb) {
+                ESP_LOGE(TAG, "PCM 输出扩容失败");
+                ret = ESP_ERR_NO_MEM;
+                break;
+            }
+            pcm = nb;                                       /* 换新缓冲，重试同一输入 */
+            continue;
+        }
+        if (dr != ESP_AUDIO_ERR_OK) {                       /* 单帧坏不弃整段 */
+            ESP_LOGW(TAG, "MP3 解码错误 %d，提前收尾", dr);  /* 告警 */
+            break;
+        }
+        pcm_len += frame.decoded_size;                      /* 累计 PCM 产量 */
+        if (raw.consumed >= raw.len) {                      /* 输入耗尽 */
+            break;
+        }
+        raw.buffer += raw.consumed;                         /* 游标推进 */
+        raw.len -= raw.consumed;
+        raw.consumed = 0;
+    }
+    esp_audio_simple_dec_close(dec);                        /* 关解码器 */
+    if (ret != ESP_OK || pcm_len < 2) {                     /* 解码失败或空输出 */
+        free(pcm);
+        return ret != ESP_OK ? ret : ESP_ERR_INVALID_STATE;
+    }
+    *pcm_out = (int16_t *)pcm;                              /* 所有权交调用方 */
+    *samples_out = pcm_len / sizeof(int16_t);               /* 样本数 = 字节/2 */
+    return ESP_OK;
+}
+
 esp_err_t minimax_tts_synthesize(const char *text,
                                  int16_t **pcm_out, size_t *samples_out)
 {
@@ -104,8 +186,8 @@ esp_err_t minimax_tts_synthesize(const char *text,
     }
     snprintf(body, body_cap,                                /* 按官方 OpenAPI 组包 */
              "{\"model\":\"%s\",\"text\":%s,\"stream\":false,"      /* 模型/文本/非流式 */
-             "\"voice_setting\":{\"voice_id\":\"%s\",\"speed\":1.0,\"vol\":1.0,\"pitch\":0},"
-             "\"audio_setting\":{\"sample_rate\":24000,\"format\":\"pcm\",\"channel\":1}}",
+             "\"voice_setting\":{\"voice_id\":\"%s\",\"speed\":0.9,\"vol\":1.0,\"pitch\":0},"
+             "\"audio_setting\":{\"sample_rate\":24000,\"bitrate\":64000,\"format\":\"mp3\",\"channel\":1}}",
              s_mm.model, esc, s_mm.voice);                  /* 模型/文本/音色 */
     free(esc);                                              /* 转义串用完释放 */
 
@@ -160,26 +242,33 @@ esp_err_t minimax_tts_synthesize(const char *text,
         return ESP_ERR_NOT_FOUND;                           /* 返回无结果 */
     }
 
-    /* ---- 4. hex 解码 → PCM（int16 mono 24kHz） ---- */
+    /* ---- 4. hex 解码 → MP3 字节 → 本地解回 PCM（2026-09-12 换 mp3 容器：
+     * 原 pcm 裸流再经 hex 编码，线上字节数 = 音频 2 倍 ≈96KB/s，Wi-Fi 降级
+     * 模式下经常断粮（卡顿根因）；mp3@64kbps + hex ≈16KB/s，砍 6 倍。
+     * 解码后仍是 24kHz mono PCM，下游接口不变。 ---- */
     const char *hex = jaudio->valuestring;                  /* hex 字符串 */
     size_t hex_len = strlen(hex);                           /* hex 长度 */
-    size_t pcm_cap = hex_len / 2;                           /* 解码后 PCM 字节数 */
-    uint8_t *pcm_bytes = heap_caps_malloc(pcm_cap, MALLOC_CAP_SPIRAM);      /* PCM 缓冲（PSRAM） */
-    if (!pcm_bytes) {                                       /* 分配失败 */
+    size_t mp3_cap = hex_len / 2;                           /* 解码后 mp3 字节数 */
+    uint8_t *mp3 = heap_caps_malloc(mp3_cap, MALLOC_CAP_SPIRAM);    /* mp3 缓冲（PSRAM） */
+    if (!mp3) {                                             /* 分配失败 */
         cJSON_Delete(root);                                 /* 释放 JSON 树 */
         return ESP_ERR_NO_MEM;                              /* 返回内存错误 */
     }
-    size_t pcm_bytes_len = hex_decode(hex, hex_len, pcm_bytes);     /* hex → 二进制 */
+    size_t mp3_len = hex_decode(hex, hex_len, mp3);         /* hex → mp3 二进制 */
     cJSON_Delete(root);                                     /* JSON 树用完释放 */
-    if (pcm_bytes_len == (size_t)-1 || pcm_bytes_len < 2) { /* 非法 hex 或样本不足 */
-        free(pcm_bytes);                                    /* 释放缓冲 */
-        ESP_LOGE(TAG, "hex 解码失败或样本过短");
+    if (mp3_len == (size_t)-1 || mp3_len < 4) {             /* 非法 hex 或数据过短 */
+        free(mp3);                                          /* 释放缓冲 */
+        ESP_LOGE(TAG, "hex 解码失败或 mp3 数据过短");
         return ESP_ERR_INVALID_STATE;                       /* 返回数据错误 */
     }
 
-    /* ---- 5. 交出 PCM（所有权转移给调用方） ---- */
-    *pcm_out = (int16_t *)pcm_bytes;                        /* 输出 PCM 指针 */
-    *samples_out = pcm_bytes_len / sizeof(int16_t);         /* 样本数 = 字节/2 */
-    ESP_LOGI(TAG, "MiniMax 合成: %u 样本 (24kHz mono)", (unsigned)*samples_out);
+    /* ---- 5. MP3 → PCM（所有权转移给调用方） ---- */
+    esp_err_t derr = mp3_decode_all(mp3, mp3_len, pcm_out, samples_out);    /* 解码整段 */
+    free(mp3);                                              /* mp3 中间缓冲用完释放 */
+    if (derr != ESP_OK) {                                   /* 解码失败 */
+        return derr;                                        /* 返回错误（调用方回退 MiMo） */
+    }
+    ESP_LOGI(TAG, "MiniMax 合成: mp3 %uB → PCM %u 样本 (24kHz mono)",
+             (unsigned)mp3_len, (unsigned)*samples_out);    /* 带宽证据：mp3 字节数 vs 旧 pcm */
     return ESP_OK;                                          /* 成功返回 */
 }

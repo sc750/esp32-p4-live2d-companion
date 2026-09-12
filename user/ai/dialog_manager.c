@@ -269,7 +269,10 @@ static void sentence_append(reply_acc_t *ra, const char *text)
         memcpy(ra->sentence + ra->sentence_len, text + pos, width);
         ra->sentence_len += width;
         pos += width;
-        if ((terminal || (soft_break && ra->sentence_len >= 18)) && ra->sentence_len > 0) {
+        if ((terminal || (soft_break && ra->sentence_len >= 90)) && ra->sentence_len > 0) {
+            /* 软断句阈值 90B（≈30 字，2026-09-12 上板调参）：原值 18B（6 字）
+             * 会把口语化回复切成碎句，每句单独合成时句间必出空洞；收紧后
+             * 短句自然连成整批，与 voice_pipeline 的攒批合成配合。 */
             ra->sentence[ra->sentence_len] = '\0';
             ra->sentence_cb(ra->sentence, ra->user_ctx);
             ra->sentence_len = 0;

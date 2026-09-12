@@ -72,6 +72,16 @@ typedef struct {
     char text[TTS_SENTENCE_MAX];    /* 句子文本（'\0' 结尾） */
 } tts_sentence_t;
 
+/* 攒批合成（2026-09-12 用户实测"短句一句一句往外蹦"）：
+ * 每句单独请求 TTS 首块要 ~2.4s，短句只播 1~2s，句间必出空洞。
+ * 攒多句合成一批（首批 ~30 字保首响，后续 ~60 字），单批可播 10 秒+，
+ * 下一批在播放期间早已就绪，听感连续。 */
+#define TTS_BATCH_FIRST_BYTES   90      /* 首批阈值（≈30 字，兼顾首响延迟） */
+#define TTS_BATCH_BYTES         180     /* 后续批次阈值（≈60 字） */
+static char s_tts_batch[TTS_SENTENCE_MAX];      /* 批次累积缓冲（未凑满批的句子先攒着） */
+static size_t s_tts_batch_len;                  /* 批次当前长度 */
+static int s_tts_batch_count;                   /* 已发批次数（决定首启阈值） */
+
 /** 一段已完整转换为 codec PCM 的短语，所有权在播放任务释放。 */
 typedef struct {
     uint8_t *pcm;                   /* 短语 PCM 缓冲（16k/2ch，PSRAM） */
@@ -131,6 +141,27 @@ static void on_reply_token(const char *text, void *ctx)
     }
 }
 
+/** 把攒好的批次推入 TTS 队列（on_reply_sentence 攒批 / process_wav 收尾共用） */
+static void tts_batch_flush(void)
+{
+    if (s_tts_batch_len == 0 || s_tts_cancel) {         /* 空批或已被音乐点播取消 */
+        s_tts_batch_len = 0;                            /* 批次作废 */
+        return;
+    }
+    tts_sentence_t item = {0};                          /* 构造句子队列项 */
+    memcpy(item.text, s_tts_batch, s_tts_batch_len + 1);    /* 批次文本（攒入时已保证放得下） */
+    __atomic_fetch_add(&s_tts_pending, 1, __ATOMIC_RELAXED);    /* 未播计数 +1（先加防竞态） */
+    if (xQueueSend(s_tts_queue, &item, pdMS_TO_TICKS(50)) == pdPASS) {  /* 投递到句子队列 */
+        ESP_LOGI(TAG, "TTS 批次入队 (%uB): %.60s",      /* 打印入队的批次 */
+                 (unsigned)s_tts_batch_len, item.text);
+    } else {                                            /* 队列满（50ms 都没等到空位） */
+        __atomic_fetch_sub(&s_tts_pending, 1, __ATOMIC_RELAXED);        /* 回滚计数 */
+        ESP_LOGW(TAG, "TTS 短句队列已满，本批未播报");   /* 告警丢批 */
+    }
+    s_tts_batch_len = 0;                                /* 批次清空 */
+    s_tts_batch_count++;                                /* 批次数推进（后续用大批阈值） */
+}
+
 /** 句末回调在 LLM 网络任务上下文执行，只投递，绝不在这里请求 TTS。 */
 static void on_reply_sentence(const char *sentence, void *ctx)
 {
@@ -154,13 +185,29 @@ static void on_reply_sentence(const char *sentence, void *ctx)
                  (s_t_first_sentence - s_t_release) / 1000);    /* 毫秒换算 */
     }
     tts_sentence_t item = {0};                          /* 构造句子队列项 */
-    strlcpy(item.text, sentence, sizeof(item.text));    /* 拷贝句子（截断保护） */
-    __atomic_fetch_add(&s_tts_pending, 1, __ATOMIC_RELAXED);    /* 未播计数 +1（先加防竞态） */
-    if (xQueueSend(s_tts_queue, &item, pdMS_TO_TICKS(50)) == pdPASS) {  /* 投递到句子队列 */
-        ESP_LOGI(TAG, "LLM 句末入队: %.80s", item.text);        /* 打印入队的句子 */
-    } else {                                            /* 队列满（50ms 都没等到空位） */
-        __atomic_fetch_sub(&s_tts_pending, 1, __ATOMIC_RELAXED);        /* 回滚计数 */
-        ESP_LOGW(TAG, "TTS 短句队列已满，本句未播报");   /* 告警丢句 */
+    /* 攒批优先：句子先进批次缓冲，凑满阈值或 LLM 收尾时才整批发送。
+     * 单句超长兜底：放不进批次缓冲时按旧逻辑直接入队（strlcpy 截断保护）。 */
+    size_t slen = strlen(sentence);                     /* 本句字节数 */
+    if (s_tts_batch_len + slen >= sizeof(s_tts_batch) - 1) {    /* 再放一句就溢出 */
+        tts_batch_flush();                              /* 先把现有批次发走腾位置 */
+    }
+    if (s_tts_batch_len + slen < sizeof(s_tts_batch) - 1) {     /* 批次攒得下 */
+        memcpy(s_tts_batch + s_tts_batch_len, sentence, slen);  /* 追加本句 */
+        s_tts_batch_len += slen;                        /* 长度推进 */
+        s_tts_batch[s_tts_batch_len] = '\0';            /* 维护结尾 */
+    } else {                                            /* 单句就超缓冲：直接入队 */
+        strlcpy(item.text, sentence, sizeof(item.text));    /* 拷贝句子（截断保护） */
+        __atomic_fetch_add(&s_tts_pending, 1, __ATOMIC_RELAXED);    /* 未播计数 +1（先加防竞态） */
+        if (xQueueSend(s_tts_queue, &item, pdMS_TO_TICKS(50)) == pdPASS) {  /* 投递到句子队列 */
+            ESP_LOGI(TAG, "LLM 超长句直发入队: %.80s", item.text);      /* 打印入队的句子 */
+        } else {                                        /* 队列满（50ms 都没等到空位） */
+            __atomic_fetch_sub(&s_tts_pending, 1, __ATOMIC_RELAXED);        /* 回滚计数 */
+            ESP_LOGW(TAG, "TTS 短句队列已满，本句未播报");   /* 告警丢句 */
+        }
+    }
+    size_t threshold = (s_tts_batch_count == 0) ? TTS_BATCH_FIRST_BYTES : TTS_BATCH_BYTES;   /* 首批小阈值保首响 */
+    if (s_tts_batch_len >= threshold) {                 /* 攒够一批了 */
+        tts_batch_flush();                              /* 整批发送 */
     }
 }
 
@@ -362,7 +409,9 @@ static void process_wav(char *wav, size_t wav_len)
              (esp_timer_get_time() - t0) / 1000);       /* 毫秒换算 */
 
     s_reply_len = 0;                                    /* 回复累积游标复位 */
-    s_reply_text[0] = '\0';                             /* 回复缓冲清空 */
+    s_reply_text[0] = '\0';                             /* 回复缓冲清零 */
+    s_tts_batch_len = 0;                                /* 批次缓冲复位（上轮残留防御） */
+    s_tts_batch_count = 0;                              /* 批次数复位（首批回到小阈值） */
     __atomic_store_n(&s_tts_pending, 0, __ATOMIC_RELAXED);      /* 未播计数清零 */
     s_tts_input_done = false;                           /* LLM 输入未完成标志 */
     s_tts_cancel = false;                               /* 复位取消闸门（上轮音乐抢占遗留） */
@@ -372,6 +421,7 @@ static void process_wav(char *wav, size_t wav_len)
     free(text);                                         /* 识别文本用完释放 */
     if (reply) {                                        /* LLM 回复成功 */
         ui_text(reply);                                 /* 字幕显示完整回复 */
+        tts_batch_flush();                              /* 收尾：把没凑满批的尾巴发走 */
         s_tts_input_done = true;                        /* 标记 LLM 输出完毕（不再有新句） */
         /* 等语音任务播完已入队短句；LLM 和第一个 TTS 已在此前并行。 */
         while (__atomic_load_n(&s_tts_pending, __ATOMIC_RELAXED) > 0) { /* 还有句子没播完 */
@@ -385,6 +435,7 @@ static void process_wav(char *wav, size_t wav_len)
         ui_state(DIALOG_STATE_IDLE);                    /* 状态点熄灭 */
         free(reply);                                    /* 释放完整回复 */
     } else {                                            /* LLM 失败 */
+        s_tts_batch_len = 0;                            /* 未成批的残句一并作废 */
         s_tts_stream_active = false;                    /* 流水线停用 */
         ui_text("……脑子突然一片空白，再说一次？");        /* 字幕提示 */
         ui_state(DIALOG_STATE_IDLE);                    /* 状态点熄灭 */
@@ -604,6 +655,7 @@ void voice_pipeline_tts_cancel(void)
      * 标志保持置位直到下一轮对话在 process_wav 里复位——这期间即使
      * 在途的 TTS 请求姗姗来迟，短语也会在播放任务门口被丢弃并释放。 */
     s_tts_cancel = true;                                /* 立闸门 */
+    s_tts_batch_len = 0;                                /* 未成批的残句一并作废 */
     if (s_tts_queue != NULL) {                          /* 句子队列：值拷贝，直接清 */
         xQueueReset(s_tts_queue);
     }
