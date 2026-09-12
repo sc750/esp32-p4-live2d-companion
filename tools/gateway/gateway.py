@@ -80,12 +80,25 @@ class AsrSession:
         self.text_parts: list[str] = [] # 累计识别文本
         self.failed = False
         self.done = asyncio.Event()     # 收到 status=2（最终结果）
-        self.ready = asyncio.Event()    # 讯飞握手完成
+        self.connected = False          # 讯飞握手完成且首帧已发
+        self.pending = []               # 握手期间到达的音频帧（最多 150 帧≈15s）
         self.rx_task = None
 
     async def start(self):
-        self.ws = await websockets.connect(xfyun_auth_url(),
-                                           ping_interval=None, max_size=None)
+        last_err = None
+        for attempt in range(2):                        # 热点网络抖动：握手失败重试一次
+            try:
+                self.ws = await asyncio.wait_for(
+                    websockets.connect(xfyun_auth_url(),
+                                       ping_interval=None, max_size=None),
+                    timeout=8)
+                break
+            except Exception as e:
+                last_err = e
+                log.warning("讯飞握手失败(第 %d 次): %r", attempt + 1, e)
+                await asyncio.sleep(0.5)
+        if not self.ws:
+            raise last_err
         first = {
             "common": {"app_id": XFYUN_APP_ID},
             "business": {"language": "zh_cn", "domain": "iat",
@@ -95,8 +108,13 @@ class AsrSession:
         }
         await self.ws.send(json.dumps(first))
         self.rx_task = asyncio.create_task(self._rx_loop())
+        self.connected = True
+        # 补发握手期间缓存的音频帧（设备边录边发，连接慢时不能丢）
+        for pcm in self.pending:
+            await self.feed(pcm)
+        self.pending.clear()
         # 注意：讯飞 IAT 没有欢迎帧——不发音频不会回话，连接成功即就绪
-        log.info("讯飞会话已连接")
+        log.info("讯飞会话已连接（补发 %d 帧）", len(self.pending))
 
     async def _rx_loop(self):
         """讯飞结果接收循环：拼字；status=2 触发 done。"""
@@ -126,6 +144,10 @@ class AsrSession:
 
     async def feed(self, pcm: bytes):
         """上行 PCM 重切成 1280B 子帧发讯飞（status=1 中间帧）。"""
+        if not self.connected:                          # 握手中：缓存待补发
+            if len(self.pending) < 150:
+                self.pending.append(pcm)
+            return
         if not self.ws:                                 # 会话未连上：丢弃本帧
             return
         for pos in range(0, len(pcm), XFYUN_FRAME_BYTES):

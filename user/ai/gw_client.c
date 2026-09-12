@@ -29,6 +29,7 @@
 #include "esp_log.h"
 #include "esp_check.h"        /* ESP_RETURN_ON_* */
 #include "cJSON.h"            /* 网关消息解析 */
+#include "esp_heap_caps.h"      /* 重组缓冲 realloc（PSRAM） */
 #include "esp_websocket_client.h"
 
 #define TAG "gw"
@@ -68,9 +69,38 @@ static void gw_event_handler(void *arg, esp_event_base_t base,
         if (ev->data_len <= 0) {
             break;                                      /* 空帧忽略 */
         }
-        if (ev->op_code == 0x02) {                      /* 二进制帧：TTS PCM（步骤 3） */
-            if (s_gw.bin_cb) {
-                s_gw.bin_cb((const uint8_t *)ev->data_ptr, (size_t)ev->data_len);
+        if (ev->op_code == 0x00 || ev->op_code == 0x02) {
+            /* 二进制帧（0x02 首片 + 0x00 续片）：大于 buffer_size 的大帧
+             * 会被组件按 buffer_size 切成多个 DATA 事件（2026-09-12 上板
+             * 实测：豆包 PCM 块 48KB 级，4096 缓冲下整帧被碎成 12 片）。
+             * 必须按 payload_offset/payload_len 重组后再分发，否则 PCM 流
+             * 千疮百孔（听感"没声音"）。文本帧（0x01）不切分，走原路。 */
+            if (s_gw.bin_cb == NULL) {
+                break;
+            }
+            static uint8_t *acc = NULL;                 /* 重组累积缓冲（PSRAM） */
+            static size_t acc_len = 0, acc_cap = 0;
+            if (ev->payload_offset == 0) {              /* 首片：重置累积 */
+                acc_len = 0;
+            }
+            if (acc_cap < (size_t)ev->payload_len) {    /* 按整帧需求扩容 */
+                uint8_t *nb = heap_caps_realloc(acc, (size_t)ev->payload_len,
+                                                MALLOC_CAP_SPIRAM);
+                if (!nb) {
+                    ESP_LOGW(TAG, "重组缓冲扩容失败(%dB)", ev->payload_len);
+                    acc = NULL;
+                    acc_cap = 0;
+                    break;                              /* 本帧放弃 */
+                }
+                acc = nb;
+                acc_cap = (size_t)ev->payload_len;
+            }
+            if (acc) {
+                memcpy(acc + ev->payload_offset, ev->data_ptr, ev->data_len);
+                acc_len = (size_t)(ev->payload_offset + ev->data_len);
+                if (acc_len >= (size_t)ev->payload_len) {       /* 整帧到手：分发 */
+                    s_gw.bin_cb(acc, acc_len);
+                }
             }
             break;
         }

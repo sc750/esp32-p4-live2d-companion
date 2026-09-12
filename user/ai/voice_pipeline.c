@@ -90,11 +90,13 @@ static struct {
 static volatile bool s_use_gw_asr;      /* 本轮是否走网关 ASR（录音开始时按连接状态决定） */
 static char *s_gw_asr_text = NULL;      /* 网关识别文本（WS 任务写入，管线任务取走并释放） */
 static volatile bool s_gw_tts_end;      /* 网关 TTS 推流结束标志（WS 任务置位） */
+static volatile bool s_gw_asr_err;      /* 网关 ASR 失败标志（区别于静音空结果） */
 
 /* 前置声明（定义在文件后段，网关播报路径先用到） */
 static void on_tts_audio(const int16_t *pcm, size_t samples, void *ctx);
 static esp_err_t spk_ring_begin(void);
 static void gw_tts_pcm_cb(const uint8_t *pcm, size_t bytes);
+static uint32_t s_gw_tts_fed = 0;   /* 诊断：本轮已喂 ring 的 PCM 字节 */
 static void player_task(void *arg);
 
 /** 网关文本消息处理器（WS 客户端任务上下文）：asr_result/tts_end → 置事件位 */
@@ -104,6 +106,11 @@ static void gw_msg_handler(const char *type, const char *data)
         free(s_gw_asr_text);                            /* 丢弃上一轮残留 */
         s_gw_asr_text = (data && data[0]) ? strdup(data) : NULL;        /* 拷贝（空结果=NULL） */
         xEventGroupSetBits(s_vp.evt, EVT_ASR_RESULT);   /* 唤醒等待方 */
+    } else if (strcmp(type, "asr_error") == 0) {        /* 网关 ASR 失败（如讯飞握手抖动） */
+        s_gw_asr_err = true;                            /* 让等待方立即回退本地识别，别干等 5s */
+        free(s_gw_asr_text);
+        s_gw_asr_text = NULL;
+        xEventGroupSetBits(s_vp.evt, EVT_ASR_RESULT);
     } else if (strcmp(type, "tts_end") == 0) {          /* 网关 TTS 推流结束（步骤 3） */
         s_gw_tts_end = true;                            /* 管线任务据它置 synth_done */
         xEventGroupSetBits(s_vp.evt, EVT_TTS_DONE);     /* 唤醒等待方 */
@@ -133,9 +140,13 @@ static esp_err_t gw_asr_collect(char **text_out)
     free(s_gw_asr_text);                                /* 清理 */
     s_gw_asr_text = NULL;
     if (bits & EVT_ASR_RESULT) {
-        return ESP_ERR_NOT_FOUND;                       /* 网关明确给出空结果（静音）——
-                                                           不必再回退本地 HTTP 白等一轮 */
+        if (s_gw_asr_err) {
+            s_gw_asr_err = false;
+            return ESP_ERR_INVALID_STATE;               /* 网关报错：回退本地识别 */
+        }
+        return ESP_ERR_NOT_FOUND;                       /* 网关明确空结果（静音）：不回退 */
     }
+    s_gw_asr_err = false;
     return ESP_ERR_TIMEOUT;                             /* 真超时：允许回退本地识别 */
 }
 
@@ -453,6 +464,7 @@ static void rec_until_stop_or(uint32_t max_ms)
     s_use_gw_asr = gw_client_is_connected();
     if (s_use_gw_asr) {
         xEventGroupClearBits(s_vp.evt, EVT_ASR_RESULT); /* 清上轮结果位 */
+        s_gw_asr_err = false;
         gw_client_send_text("{\"type\":\"asr_start\",\"fmt\":\"pcm16k\"}");
         voice_rec_set_chunk_cb(gw_chunk_uplink);        /* 挂块上行回调 */
         ESP_LOGI(TAG, "本轮 ASR 走网关流式");
@@ -491,7 +503,7 @@ static void process_wav(char *wav, size_t wav_len)
         esp_err_t gerr = gw_asr_collect(&text);
         if (gerr == ESP_OK && text && text[0]) {
             err = ESP_OK;                               /* 网关识别成功 */
-        } else if (gerr == ESP_ERR_NOT_FOUND) {         /* 网关明确空结果（静音）——直接判没听清 */
+        } else if (gerr == ESP_ERR_INVALID_STATE) {     /* 网关报错：回退本地识别 */
             free(text);
             free(wav);                                  /* WAV 用完释放 */
             ui_text("……好像没听到我说话？再说一遍？");   /* 字幕提示重试 */
@@ -539,6 +551,7 @@ static void process_wav(char *wav, size_t wav_len)
             ui_state(DIALOG_STATE_SPEAKING);            /* 绿点亮起 */
             music_notify_voice_start();                 /* TTS 抢占音乐（与按句路径同语义） */
             bool played = false;                        /* 本轮是否已成功走网关播报 */
+            s_gw_tts_fed = 0;
             if (spk_ring_begin() == ESP_OK) {           /* ring + 播放器就位 */
                 xEventGroupClearBits(s_vp.evt, EVT_TTS_DONE);
                 s_gw_tts_end = false;
@@ -554,6 +567,7 @@ static void process_wav(char *wav, size_t wav_len)
                                                            pdTRUE, pdFALSE,
                                                            pdMS_TO_TICKS(45000));
                     if (bits & EVT_TTS_DONE) {          /* 推流完：等播放器排空 ring */
+                        ESP_LOGI(TAG, "网关 TTS 已喂 ring %uB", (unsigned)s_gw_tts_fed);
                         s_spk.synth_done = true;        /* 播放器排空后自退 */
                         s_gw_tts_end = false;
                         int wait_ms = 30000;            /* 排空上限（2MB ring ≈ 32s，防御） */
@@ -632,6 +646,7 @@ static void process_wav(char *wav, size_t wav_len)
 static void gw_tts_pcm_cb(const uint8_t *pcm, size_t bytes)
 {
     if (s_spk.ring != NULL && !s_spk.synth_done) {      /* 播放会话进行中才喂 */
+        s_gw_tts_fed += bytes;
         on_tts_audio((const int16_t *)pcm, bytes / sizeof(int16_t), NULL);
     }
 }
@@ -916,6 +931,7 @@ esp_err_t voice_pipeline_init(void)
     s_tts_request_lock = xSemaphoreCreateMutex();   /* 创建 TTS 请求互斥锁 */
     ESP_RETURN_ON_FALSE(s_tts_request_lock, ESP_ERR_NO_MEM, TAG, "tts request lock alloc failed");  /* 失败报错 */
     gw_client_set_msg_handler(gw_msg_handler);      /* 步骤 2：注册网关消息处理器（ASR 结果） */
+    gw_client_set_binary_handler(gw_tts_pcm_cb);    /* 步骤 3：注册 PCM 帧处理器（漏注册=喂 ring 0B，2026-09-12 实测） */
     s_vp.inited = true;                             /* 置就绪标志 */
     if (xTaskCreate(pipeline_task, "voice_pipe", 8 * 1024, NULL, 4, NULL) != pdPASS) {      /* 管线任务 */
         ESP_LOGE(TAG, "创建管线任务失败");           /* 创建失败 */
