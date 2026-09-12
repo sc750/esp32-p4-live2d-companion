@@ -54,6 +54,9 @@ CHARSET = (
     "糊累耳胎胖胞自要让许还那醒里长陪面饭"
     # 触摸反应语料（rig_chatter.c TOUCH_LINES 表用字）
     "半又戳把按服然痒突舒钮"
+    # 音乐页（scr_music.c 文案 + music_service.c 的电台名）
+    # 电台名在 music_service.c 的 s_radios[] 字面量里，会随播放列表直接上屏
+    "网络电台环境子舒缓声空间氛围量当无曲目"
 )
 
 OUT = os.path.join("user", "ui", "fonts", "lv_font_nino_cjk_16.c")

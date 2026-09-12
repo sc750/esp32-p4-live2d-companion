@@ -103,6 +103,16 @@ void scr_home_set_time(const char *time_str, bool synced);
 void scr_home_set_wifi_toggle_cb(void (*cb)(bool turn_on, void *ctx), void *ctx);
 
 /**
+ * @brief 注册音乐页入口回调（Phase 5：状态栏音符按钮）
+ *
+ * 用户点状态栏音符按钮时调用；编排层接到后切到 UI_PAGE_MUSIC。
+ *
+ * @param[in] cb   回调（NULL=注销）
+ * @param[in] ctx  回调上下文
+ */
+void scr_home_set_music_entry_cb(void (*cb)(void *ctx), void *ctx);
+
+/**
  * @brief 更新底部字幕
  *
  * @param[in] text  要显示的文本（如 "你好！点击角色开始聊天 ~"）

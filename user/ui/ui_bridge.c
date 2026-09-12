@@ -17,6 +17,8 @@
 
 /* 3. 项目级 */
 #include "scr_home.h"
+#include "scr_music.h"          /* 音乐页（Phase 5） */
+#include "ui_manager.h"         /* 页面导航（ui_manager_navigate） */
 
 /* 4. 平台/厂商头 */
 #include "esp_lv_adapter.h"
@@ -52,5 +54,33 @@ void ui_bridge_set_time(const char *time_str, bool synced)
     }
     esp_lv_adapter_lock(-1);
     scr_home_set_time(time_str, synced);
+    esp_lv_adapter_unlock();
+}
+
+void ui_bridge_navigate(int page_id)
+{
+    esp_lv_adapter_lock(-1);                            /* ui_manager_navigate 不自带锁 */
+    ui_manager_navigate((ui_page_id_t)page_id);
+    esp_lv_adapter_unlock();
+}
+
+void ui_bridge_set_music_state(bool playing, bool paused, int cur_idx, int pos_sec)
+{
+    esp_lv_adapter_lock(-1);
+    scr_music_set_state(playing, paused, cur_idx, pos_sec);
+    esp_lv_adapter_unlock();
+}
+
+void ui_bridge_set_music_volume(int vol)
+{
+    esp_lv_adapter_lock(-1);
+    scr_music_set_volume(vol);
+    esp_lv_adapter_unlock();
+}
+
+void ui_bridge_set_music_playlist(const char *const *names, int count)
+{
+    esp_lv_adapter_lock(-1);
+    scr_music_set_playlist(names, count);
     esp_lv_adapter_unlock();
 }

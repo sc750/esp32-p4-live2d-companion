@@ -51,6 +51,7 @@
 #define READ_CHUNK_MS       20                      /* 命令轮询周期（暂停响应延迟上限） */
 #define NET_READ_TIMEOUT_MS 10000                   /* 网络流单次读超时（块间隔余量） */
 #define NET_RETRY_MAX       5                       /* 网络流连续读失败上限（超过即放弃本曲） */
+#define MUSIC_VOL_DEFAULT   30                      /* 初始音量（与 bsp_audio 上电默认一致） */
 
 /* 播放任务命令 */
 typedef enum {
@@ -88,6 +89,7 @@ static struct {
     volatile bool paused;                   /* 暂停标志 */
     volatile bool abort_cur;                /* 中断当前曲（stop/切歌） */
     int pos_sec;                            /* 已播秒数（曲内累计） */
+    int volume;                             /* 当前音量 0~100（音乐页滑块初值用） */
 } s_mus;
 
 /** 内置网络电台表（Kconfig 配置；URL 留空则跳过该条） */
@@ -399,6 +401,7 @@ esp_err_t music_service_init(void)
     }
     memset(&s_mus, 0, sizeof(s_mus));                   /* 清零 */
     s_mus.cur = -1;                                     /* 无当前曲 */
+    s_mus.volume = MUSIC_VOL_DEFAULT;                   /* 音量初值（音乐页滑块读它） */
 
     /* 曲目表走 PSRAM（25KB 级，绝不常驻内部 SRAM——会挤压 SDIO 内存池） */
     s_mus.tracks = heap_caps_calloc(MUSIC_LIST_MAX, sizeof(music_track_t),
@@ -505,7 +508,26 @@ esp_err_t music_stop(void)
 
 esp_err_t music_set_volume(int volume)
 {
-    return bsp_audio_set_volume(volume);                /* 透传 BSP */
+    if (volume < 0) {                                   /* 下限夹紧 */
+        volume = 0;                                     /* 静音 */
+    } else if (volume > 100) {                          /* 上限夹紧 */
+        volume = 100;                                   /* 最大 */
+    }
+    esp_err_t err = bsp_audio_set_volume(volume);       /* 透传 BSP */
+    if (err == ESP_OK) {                                /* 只在成功时记值 */
+        s_mus.volume = volume;                          /* 记当前音量（音乐页滑块读它） */
+    }
+    return err;                                         /* 返回结果 */
+}
+
+int music_get_volume(void)
+{
+    return s_mus.volume;                                /* 当前音量（未初始化时 0） */
+}
+
+int music_current_index(void)
+{
+    return s_mus.cur;                                   /* 当前曲索引（无则 -1） */
 }
 
 bool music_is_playing(void)

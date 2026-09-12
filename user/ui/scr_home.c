@@ -46,6 +46,7 @@ typedef struct {
     lv_obj_t *status_bar;       /* 顶部状态栏 */
     lv_obj_t *wifi_switch;      /* Wi-Fi 开关滑块（R12：拨右=开/绿） */
     lv_obj_t *wifi_label;       /* Wi-Fi 状态文案（黄=未连/绿=连接中/已连） */
+    lv_obj_t *music_btn;        /* 音乐页入口按钮（Phase 5） */
     lv_obj_t *time_label;       /* 时间显示标签 */
     lv_obj_t *live2d_area;      /* Live2D 角色区域 */
     lv_obj_t *subtitle_bar;     /* 底部字幕栏 */
@@ -65,6 +66,10 @@ static void *s_wifi_toggle_ctx = NULL;
 static void (*s_voice_hold_cb)(bool holding, void *ctx) = NULL;
 static void *s_voice_hold_ctx = NULL;
 
+/* 音乐页入口回调（编排层注入：切到 UI_PAGE_MUSIC） */
+static void (*s_music_entry_cb)(void *ctx) = NULL;
+static void *s_music_entry_ctx = NULL;
+
 /* 前向声明：麦克风按钮事件 */
 static void on_mic_pressed(lv_event_t *e);
 static void on_mic_released(lv_event_t *e);
@@ -83,9 +88,23 @@ static void on_wifi_switch_changed(lv_event_t *e)
 }
 
 /**
+ * @brief 音乐入口按钮点击（Phase 5：主页 → 音乐页）
+ *
+ * UI 不直接调 ui_manager——交编排层切换，保持"UI 只发信号"的分层一致。
+ */
+static void on_music_clicked(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "进入音乐页");
+    if (s_music_entry_cb) {
+        s_music_entry_cb(s_music_entry_ctx);
+    }
+}
+
+/**
  * @brief 创建顶部状态栏（R12：Wi-Fi 滑块开关 + 三态文案 | 时间）
  *
- * 布局：SPACE_BETWEEN —— 左侧[开关+状态文案]组合，右侧时间。
+ * 布局：SPACE_BETWEEN —— 左侧[开关+状态文案]组合，右侧[音乐入口+时间]组合。
  * 必须显式 pad_all(0)：lv_obj 默认主题 pad=20 会把 40px 高的栏撑爆。
  */
 static void create_status_bar(lv_obj_t *parent)
@@ -134,8 +153,41 @@ static void create_status_bar(lv_obj_t *parent)
     lv_obj_set_style_text_color(s_home_ui.wifi_label, lv_color_hex(0xF1C40F), 0);
     lv_obj_set_style_text_font(s_home_ui.wifi_label, nino_font_cjk16(), 0);
 
-    /* ---- 右侧：时间 ---- */
-    s_home_ui.time_label = lv_label_create(s_home_ui.status_bar);
+    /* ---- 右侧组：音乐入口 + 时间 ----
+     * 为什么打包成容器：状态栏是 SPACE_BETWEEN 两端对齐，子元素有三个
+     * 就会把中间那个顶到屏幕正中——右组两项必须先合成一个对象。 */
+    lv_obj_t *right_group = lv_obj_create(s_home_ui.status_bar);
+    lv_obj_set_size(right_group, LV_SIZE_CONTENT, STATUS_BAR_H);
+    lv_obj_set_style_bg_opa(right_group, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(right_group, 0, 0);
+    lv_obj_set_style_pad_all(right_group, 0, 0);
+    lv_obj_set_flex_flow(right_group, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(right_group, LV_FLEX_ALIGN_END,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(right_group, 16, 0);    /* 按钮与时间间距 */
+    lv_obj_clear_flag(right_group, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* 音乐页入口（Phase 5）：点一下进全屏音乐控制面板
+     * 可见性坑（2026-09-11 上板实测）：按钮底色用 primary_color 是蓝色，
+     * 但夜/日主题下用户看到的背景是白的——图标白色 + 按钮白色背景 =
+     * 隐身。改成深灰底 + 白图标，白天黑夜都看得见。 */
+    s_home_ui.music_btn = lv_button_create(right_group);
+    lv_obj_set_size(s_home_ui.music_btn, 56, 36);
+    lv_obj_set_style_bg_color(s_home_ui.music_btn, lv_color_hex(0x2C3E50), 0);
+    lv_obj_set_style_radius(s_home_ui.music_btn, 18, 0);
+    lv_obj_set_style_shadow_width(s_home_ui.music_btn, 0, 0);
+    lv_obj_set_style_pad_all(s_home_ui.music_btn, 0, 0);
+    lv_obj_add_event_cb(s_home_ui.music_btn, on_music_clicked,
+                        LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *music_icon = lv_label_create(s_home_ui.music_btn);
+    lv_label_set_text(music_icon, LV_SYMBOL_AUDIO);
+    lv_obj_set_style_text_color(music_icon, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(music_icon, &lv_font_montserrat_14, 0);
+    lv_obj_center(music_icon);
+
+    /* ---- 最右：时间 ---- */
+    s_home_ui.time_label = lv_label_create(right_group);
     lv_label_set_text(s_home_ui.time_label, "--:--");
     lv_obj_set_style_text_color(s_home_ui.time_label, colors->text_color, 0);
     lv_obj_set_style_text_font(s_home_ui.time_label, nino_font_cjk16(), 0);
@@ -388,6 +440,12 @@ void scr_home_set_voice_hold_cb(void (*cb)(bool holding, void *ctx), void *ctx)
 {
     s_voice_hold_cb = cb;
     s_voice_hold_ctx = ctx;
+}
+
+void scr_home_set_music_entry_cb(void (*cb)(void *ctx), void *ctx)
+{
+    s_music_entry_cb = cb;
+    s_music_entry_ctx = ctx;
 }
 
 void scr_home_set_subtitle(const char *text)

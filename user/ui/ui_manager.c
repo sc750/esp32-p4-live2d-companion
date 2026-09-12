@@ -21,6 +21,7 @@
 
 /* 3. 项目级 */
 #include "scr_home.h"            /* Home 页面 */
+#include "scr_music.h"           /* 音乐页（Phase 5：屏幕音乐控制入口） */
 #include "theme_manager.h"       /* 主题管理 */
 #include "app_state_machine.h"   /* 状态机 */
 #include "app_events.h"          /* 事件类型 */
@@ -121,6 +122,13 @@ esp_err_t ui_manager_init(void)
     s_pages[UI_PAGE_HOME].container = scr_home_create(s_scr_main);
     s_pages[UI_PAGE_HOME].page_id = UI_PAGE_HOME;
     s_pages[UI_PAGE_HOME].is_created = true;
+
+    /* 创建音乐页（Phase 5：全屏音乐控制面板，主页音符按钮进入）
+     * 必要性：navigate() 对未创建的页面不做处理——目标容器为 NULL 时
+     * 会"隐藏当前页且不显示新页"，屏幕直接全黑。所以开放入口前必须先建页。 */
+    s_pages[UI_PAGE_MUSIC].container = scr_music_create(s_scr_main);
+    s_pages[UI_PAGE_MUSIC].page_id = UI_PAGE_MUSIC;
+    s_pages[UI_PAGE_MUSIC].is_created = true;
 
     /* 独立 Chat 页已拆除（R9，对话=主页状态层），其余页面按 Phase 推进再建 */
 

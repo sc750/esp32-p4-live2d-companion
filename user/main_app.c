@@ -35,7 +35,7 @@
 #include "rig_rig.h"
 #include "rig_chatter.h"
 #include "scr_home.h"
-#include "ui_bridge.h"
+#include "scr_music.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -173,6 +173,70 @@ static void on_chat_line(const char *text, void *ctx)
     }
 }
 
+/* ---- Phase 5：音乐页（屏幕音乐控制入口） ---- */
+
+/** 主页音符按钮 → 进音乐页；顺手把真实音量同步到滑块（串口改过也不失配） */
+static void on_music_entry(void *ctx)
+{
+    (void)ctx;
+    ui_bridge_navigate(UI_PAGE_MUSIC);              /* 持锁切页（ui_manager_navigate 自身不带锁） */
+    ui_bridge_set_music_volume(music_get_volume()); /* 音量滑块对齐真实值 */
+}
+
+/** 音乐页返回按钮 → 回主页（音乐继续播：播放任务独立于页面，不受切页影响） */
+static void on_music_back(void *ctx)
+{
+    (void)ctx;
+    ui_bridge_navigate(UI_PAGE_HOME);               /* 切回主页 */
+}
+
+/**
+ * @brief 音乐页播控命令 → music_service
+ *
+ * 安全性：LVGL 事件回调运行在 LVGL 任务上下文，这里调的每个接口都是
+ * 非阻塞的（music_play_index/next/prev 只入命令队列，pause/resume 只置
+ * 标志，set_volume 透传 codec），不会把 UI 任务卡住。
+ */
+static void on_music_ctrl(int cmd, int arg, void *ctx)
+{
+    (void)ctx;
+    switch (cmd) {                                              /* UI 枚举 → 业务调用 */
+        case SCR_MUSIC_CMD_PLAY:   music_play_index(arg); break;    /* 播第 arg 首 */
+        case SCR_MUSIC_CMD_PAUSE:  music_pause();        break;     /* 暂停 */
+        case SCR_MUSIC_CMD_RESUME: music_resume();       break;     /* 从暂停继续 */
+        case SCR_MUSIC_CMD_NEXT:   music_next();         break;     /* 下一首/下一台 */
+        case SCR_MUSIC_CMD_PREV:   music_prev();         break;     /* 上一首/上一台 */
+        case SCR_MUSIC_CMD_VOL:    music_set_volume(arg); break;    /* 音量 0~100 */
+        default: break;                                             /* 未知命令忽略 */
+    }
+}
+
+/** 用音乐服务的曲目表填充音乐页列表（须在 music_service_init 之后调） */
+static void music_ui_load_playlist(void)
+{
+    static const char *names[SCR_MUSIC_LIST_MAX];   /* 曲名快照（static：不占任务栈） */
+    int n = music_count();                          /* 当前曲目数 */
+    if (n > SCR_MUSIC_LIST_MAX) {                   /* 超出页面列表上限 */
+        ESP_LOGW("main", "曲目 %d 首超出音乐页上限，只显示前 %d",    /* 告警 */
+                 n, SCR_MUSIC_LIST_MAX);
+        n = SCR_MUSIC_LIST_MAX;                     /* 截断 */
+    }
+    for (int i = 0; i < n; i++) {                   /* 逐个取曲名 */
+        names[i] = music_name_at(i);                /* 指向曲目表内部（PSRAM 常驻，无需拷贝） */
+    }
+    ui_bridge_set_music_playlist(names, n);         /* 持锁交给页面建列表项（渲染任务已在跑） */
+    ESP_LOGI("main", "音乐页播放列表: %d 项", n);    /* 日志 */
+}
+
+/** 音乐页接线（入口/返回/播控 + 列表）——打包一个调用，避免 user_app_run 编排膨胀 */
+static void wire_music_ui(void)
+{
+    scr_home_set_music_entry_cb(on_music_entry, NULL);  /* 主页音符按钮 */
+    scr_music_set_back_cb(on_music_back, NULL);         /* 页面返回按钮 */
+    scr_music_set_control_cb(on_music_ctrl, NULL);      /* 播控命令出口 */
+    music_ui_load_playlist();                           /* 填充播放列表 */
+}
+
 void user_app_run(void)
 {
     ESP_LOGI(TAG, "==========================================");
@@ -217,6 +281,9 @@ void user_app_run(void)
     voice_pipeline_set_ui(&voice_ui);
     scr_home_set_voice_hold_cb(on_voice_hold, NULL);
     chat_console_start(on_chat_line, NULL);
+
+    /* 4d. 音乐页接线（Phase 5）：须在 music_service_init 之后（列表要读曲目表） */
+    wire_music_ui();
 
     /* 5. 角色加载 + 动画渲染（M03 R5b：入住 live2d_area + 触摸表情） */
     static rig_model_t s_model;
@@ -267,6 +334,13 @@ void user_app_run(void)
             memcpy(last_time, now_buf, sizeof(now_buf));
         }
         last_time_synced = time_sync_is_synced();
+
+        /* 音乐页状态刷新（Phase5）：只在音乐页可见时做——主页时省掉每秒拿锁。
+         * 页面内部还有"值未变不重绘"的闸门，所以这里按 1s 节拍喂是安全的。 */
+        if (ui_manager_get_current_page() == UI_PAGE_MUSIC) {
+            ui_bridge_set_music_state(music_is_playing(), music_is_paused(),
+                                      music_current_index(), music_position_sec());
+        }
 
         /* 每 60 秒打印内存报告 */
         static int tick_count = 0;

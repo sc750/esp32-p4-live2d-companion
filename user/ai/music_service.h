@@ -55,8 +55,11 @@ esp_err_t music_pause(void);
 esp_err_t music_resume(void);
 esp_err_t music_stop(void);
 
-/** 音量 0~100（透传 bsp_audio_set_volume） */
+/** 音量 0~100（透传 bsp_audio_set_volume；越界自动夹紧并记入当前值） */
 esp_err_t music_set_volume(int volume);
+
+/** 当前音量 0~100（音乐页滑块初值；init 前为 0） */
+int music_get_volume(void);
 
 /** 是否正在播放（含暂停态返回 false） */
 bool music_is_playing(void);
@@ -66,6 +69,9 @@ bool music_is_paused(void);
 
 /** 当前曲名（文件名去路径；无歌返回 NULL） */
 const char *music_current_name(void);
+
+/** 当前曲索引（0 起；无当前曲返回 -1）——音乐页列表高亮用 */
+int music_current_index(void);
 
 /** 当前曲已播放秒数（暂停不计） */
 int music_position_sec(void);

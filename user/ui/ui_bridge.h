@@ -36,6 +36,36 @@ void ui_bridge_set_wifi_state(int state);
 /** 更新状态栏时间（"HH:MM"；synced=false 断线漂移中 → 文字变灰） */
 void ui_bridge_set_time(const char *time_str, bool synced);
 
+/**
+ * @brief 切换到指定页面（page_id 取 ui_page_id_t 值，任意任务安全）
+ *
+ * 存在的理由：ui_manager_navigate() 自己不持 adapter 锁（直接改 LVGL 的
+ * HIDDEN 标志），从主循环任务直接调会与 LVGL 渲染任务竞争 → 由本桥补锁。
+ */
+void ui_bridge_navigate(int page_id);
+
+/**
+ * @brief 刷新音乐页播放状态（任意任务安全）
+ *
+ * 内部自带"值未变不绘制"与"页面隐藏直接返回"两道闸门，
+ * 可放心按秒节拍调用。
+ */
+void ui_bridge_set_music_state(bool playing, bool paused, int cur_idx, int pos_sec);
+
+/** 同步音乐页音量滑块位置（进页面时调一次；改值不发控制命令） */
+void ui_bridge_set_music_volume(int vol);
+
+/**
+ * @brief 用曲名数组建/重建音乐页播放列表（任意任务安全）
+ *
+ * 存在的理由：set_playlist 内部会建/删 LVGL 对象，必须持 adapter 锁——
+ * 编排层不许绕过本桥直接调 scr_music_set_playlist。
+ *
+ * @param[in] names  曲名指针数组（元素须指向常驻内存，页面不拷贝）
+ * @param[in] count  曲目数（0 或 names=NULL 表示清空列表）
+ */
+void ui_bridge_set_music_playlist(const char *const *names, int count);
+
 #ifdef __cplusplus
 }
 #endif
