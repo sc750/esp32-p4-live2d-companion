@@ -41,10 +41,13 @@ esp_err_t ai_http_init(void)
     return ESP_OK;                                      /* 成功 */
 }
 
-/** 请求公共准备：创建 client + 头 + 发 body。成功后 *out 持有句柄 */
+/** 请求公共准备：创建 client + 头 + 发 body。成功后 *out 持有句柄。
+ *  extra_headers：以 NULL 结尾的 "Key: Value" 数组（须在 open 前设置——
+ *  open 之后请求已发出，再设头就发不出去了，2026-09-12 豆包 400 实测教训） */
 static esp_err_t http_common_setup(esp_http_client_handle_t *out,
                                    const char *url, const char *api_key,
-                                   const char *json_body, int timeout_ms)
+                                   const char *json_body, int timeout_ms,
+                                   const char *const *extra_headers)
 {
     esp_http_client_config_t cfg = {
         .url = url,
@@ -63,6 +66,22 @@ static esp_err_t http_common_setup(esp_http_client_handle_t *out,
     snprintf(auth, sizeof(auth), "Bearer %s", api_key);
     esp_http_client_set_header(*out, "Authorization", auth);
     esp_http_client_set_header(*out, "Accept", "text/event-stream");
+    if (extra_headers) {                                /* 追加自定义鉴权头（open 之前！） */
+        for (int i = 0; extra_headers[i]; i++) {
+            const char *sep = strchr(extra_headers[i], ':');
+            if (sep) {                                  /* 按 "Key: Value" 拆 */
+                char k[64];
+                size_t klen = (size_t)(sep - extra_headers[i]);
+                if (klen < sizeof(k)) {
+                    memcpy(k, extra_headers[i], klen);
+                    k[klen] = '\0';
+                    const char *v = sep + 1;
+                    if (*v == ' ') v++;                 /* 跳过冒号后的空格 */
+                    esp_http_client_set_header(*out, k, v);
+                }
+            }
+        }
+    }
     int len = (int)strlen(json_body);
     esp_err_t err = esp_http_client_open(*out, len);
     if (err != ESP_OK) {
@@ -94,25 +113,10 @@ static esp_err_t post_sse_inner(const char *url, const char *api_key,
 {
     esp_http_client_handle_t client = NULL;
     int timeout_ms = (recv_timeout_s > 0 ? recv_timeout_s : 10) * 1000;
-    esp_err_t err = http_common_setup(&client, url, api_key, json_body, timeout_ms);
+    esp_err_t err = http_common_setup(&client, url, api_key, json_body, timeout_ms,
+                                      extra_headers);   /* 自定义头必须在 open 前设置 */
     if (err != ESP_OK) {
         return err;
-    }
-    if (extra_headers) {                                /* 追加自定义鉴权头（豆包 X-Api-* 等） */
-        for (int i = 0; extra_headers[i]; i++) {
-            const char *sep = strchr(extra_headers[i], ':');
-            if (sep) {                                  /* 按 "Key: Value" 拆 */
-                char k[64];
-                size_t klen = (size_t)(sep - extra_headers[i]);
-                if (klen < sizeof(k)) {
-                    memcpy(k, extra_headers[i], klen);
-                    k[klen] = '\0';
-                    const char *v = sep + 1;
-                    if (*v == ' ') v++;                 /* 跳过冒号后的空格 */
-                    esp_http_client_set_header(client, k, v);
-                }
-            }
-        }
     }
 
     int status = esp_http_client_get_status_code(client);
@@ -222,7 +226,8 @@ static esp_err_t post_json_inner(const char *url, const char *api_key,
 {
     esp_http_client_handle_t client = NULL;
     int timeout_ms = (recv_timeout_s > 0 ? recv_timeout_s : 10) * 1000;
-    esp_err_t err = http_common_setup(&client, url, api_key, json_body, timeout_ms);
+    esp_err_t err = http_common_setup(&client, url, api_key, json_body, timeout_ms,
+                                      NULL);
     if (err != ESP_OK) {
         return err;
     }
