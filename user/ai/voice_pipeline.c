@@ -38,6 +38,7 @@
 #include "voice_rec.h"          /* 录音器 */
 #include "asr_client.h"         /* ASR（讯飞/MiMo 双后端） */
 #include "tts_client.h"         /* TTS（MiMo 流式合成） */
+#include "doubao_tts.h"         /* TTS（豆包真流式，2026-09 方案 A） */
 #include "dialog_manager.h"     /* LLM 对话（流式断句） */
 #include "rig_rig.h"            /* 口型驱动（rig_rig_set_mouth） */
 #include "app_events.h"         /* dialog_state_t 共享词汇 */
@@ -417,21 +418,32 @@ static void process_wav(char *wav, size_t wav_len)
     s_tts_cancel = false;                               /* 复位取消闸门（上轮音乐抢占遗留） */
     s_tts_stream_active = true;                         /* 按句 TTS 流水线激活 */
     s_reply_last_flush_us = esp_timer_get_time();       /* 字幕节流基准复位 */
-    char *reply = dialog_ask_stream(text, on_reply_token, on_reply_sentence, NULL);     /* 流式对话 */
+    /* 豆包启用时走环形缓冲真流式整句播报（边合成边播，首声 ~1s）；
+     * 按句流水线对豆包无意义（TLS 锁下 TTS 本来就要等 LLM 结束）。 */
+    bool db_stream = doubao_tts_configured();
+    char *reply = dialog_ask_stream(text, on_reply_token,
+                                    db_stream ? NULL : on_reply_sentence, NULL);        /* 流式对话 */
     free(text);                                         /* 识别文本用完释放 */
     if (reply) {                                        /* LLM 回复成功 */
         ui_text(reply);                                 /* 字幕显示完整回复 */
-        tts_batch_flush();                              /* 收尾：把没凑满批的尾巴发走 */
-        s_tts_input_done = true;                        /* 标记 LLM 输出完毕（不再有新句） */
-        /* 等语音任务播完已入队短句；LLM 和第一个 TTS 已在此前并行。 */
-        while (__atomic_load_n(&s_tts_pending, __ATOMIC_RELAXED) > 0) { /* 还有句子没播完 */
-            vTaskDelay(pdMS_TO_TICKS(50));              /* 50ms 轮询等待 */
+        if (db_stream) {                                /* 豆包：整句流式播报 */
+            s_tts_stream_active = false;                /* 未走按句流水线 */
+            ui_state(DIALOG_STATE_SPEAKING);            /* 绿点亮起 */
+            music_notify_voice_start();                 /* TTS 抢占音乐（与按句路径同语义） */
+            voice_pipeline_speak(reply);                /* 环形缓冲边合成边播（阻塞至播完） */
+        } else {                                        /* MiniMax/MiMo：按句流水线 */
+            tts_batch_flush();                          /* 收尾：把没凑满批的尾巴发走 */
+            s_tts_input_done = true;                    /* 标记 LLM 输出完毕（不再有新句） */
+            /* 等语音任务播完已入队短句；LLM 和第一个 TTS 已在此前并行。 */
+            while (__atomic_load_n(&s_tts_pending, __ATOMIC_RELAXED) > 0) {     /* 还有句子没播完 */
+                vTaskDelay(pdMS_TO_TICKS(50));          /* 50ms 轮询等待 */
+            }
         }
         ESP_LOGI(TAG, "⏱ 全程: %lldms（松手→播完）",     /* 打印全程延迟 */
                  (esp_timer_get_time() - t0) / 1000);   /* 毫秒换算 */
         rig_rig_set_mouth(RIG_MOUTH_CLOSED);            /* 播完闭嘴 */
         rig_rig_set_mouth(RIG_MOUTH_AUTO);              /* 释放口型控制交还 idle */
-        s_tts_stream_active = false;                    /* 按句流水线停用 */
+        s_tts_stream_active = false;                    /* 流水线停用 */
         ui_state(DIALOG_STATE_IDLE);                    /* 状态点熄灭 */
         free(reply);                                    /* 释放完整回复 */
     } else {                                            /* LLM 失败 */

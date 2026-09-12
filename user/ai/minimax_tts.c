@@ -91,8 +91,8 @@ static size_t hex_decode(const char *hex, size_t hex_len, uint8_t *out)
  * 输入：MiniMax 返回的 mp3 字节（24kHz mono，64kbps）；输出：int16 mono PCM。
  * @return ESP_OK 成功；*pcm_out 所有权转移给调用方（heap_caps_free 释放）
  */
-static esp_err_t mp3_decode_all(const uint8_t *mp3, size_t mp3_len,
-                                int16_t **pcm_out, size_t *samples_out)
+esp_err_t minimax_tts_mp3_decode(const uint8_t *mp3, size_t mp3_len,
+                                 int16_t **pcm_out, size_t *samples_out)
 {
     esp_audio_simple_dec_cfg_t cfg = {                      /* feed 式解码器配置 */
         .dec_type = ESP_AUDIO_SIMPLE_DEC_TYPE_MP3,          /* MP3 */
@@ -263,7 +263,7 @@ esp_err_t minimax_tts_synthesize(const char *text,
     }
 
     /* ---- 5. MP3 → PCM（所有权转移给调用方） ---- */
-    esp_err_t derr = mp3_decode_all(mp3, mp3_len, pcm_out, samples_out);    /* 解码整段 */
+    esp_err_t derr = minimax_tts_mp3_decode(mp3, mp3_len, pcm_out, samples_out);    /* 解码整段 */
     free(mp3);                                              /* mp3 中间缓冲用完释放 */
     if (derr != ESP_OK) {                                   /* 解码失败 */
         return derr;                                        /* 返回错误（调用方回退 MiMo） */

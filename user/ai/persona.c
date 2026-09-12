@@ -35,6 +35,8 @@ static const char *DEFAULT_BASE =
     "害羞或口是心非时会结巴（如「才、才不是……」）；"
     "关心用户的措辞总是绕个弯。不知道的事就承认不知道，不编造。"
     "你没有身体，不要提及物理接触类动作；但可以谈料理、耳机、音乐。"
+    "【延迟铁律】每次回复总共不超过 50 个汉字（两三句话），说完就停，"
+    "不追问不补充——回复越短，对方越快听到你的声音。"
     "回复的第一个句子必须很短（不超过 15 个字，先接上话头），"
     "细节放到后面的句子里说——第一句短能让对方更快听到你的声音。";
 
@@ -136,5 +138,14 @@ esp_err_t persona_set(const char *name, const char *base)
     if (base && base[0]) {                                      /* 给了新文本才改 */
         strlcpy(s_pers.base, base, PERSONA_BASE_MAX);           /* 覆写文本（截断保护） */
     }
+    return persona_save();                                      /* 立即落盘 */
+}
+
+esp_err_t persona_reset_default(void)
+{
+    ESP_RETURN_ON_FALSE(s_pers.inited, ESP_ERR_INVALID_STATE, TAG, "not init");
+    strlcpy(s_pers.name, DEFAULT_NAME, PERSONA_NAME_MAX);       /* 回默认名 */
+    strlcpy(s_pers.base, DEFAULT_BASE, PERSONA_BASE_MAX);       /* 回默认文本 */
+    ESP_LOGI(TAG, "人设已重置为内置默认");                        /* 日志 */
     return persona_save();                                      /* 立即落盘 */
 }

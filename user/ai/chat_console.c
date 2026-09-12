@@ -30,6 +30,7 @@
 #include "freertos/task.h"
 
 #include "scr_home.h"       /* 临时调试：uix 命令吐状态栏坐标 */
+#include "persona.h"        /* persona reset 命令（人设限长规则上板用） */
 #include "lwip/netdb.h"     /* 临时调试：dns 命令 getaddrinfo */
 #include "lwip/inet.h"      /* 临时调试：dns 命令 inet_ntoa_r */
 #include "memory_store.h"
@@ -38,7 +39,9 @@
 
 #define TAG "chat_con"
 
-#define LINE_MAX    (512)
+#ifndef LINE_MAX                             /* limits.h（lwip 链引入）已定义同名宏 */
+#define LINE_MAX    (512)                    /* 串口单行输入上限（本模块自有定义） */
+#endif
 /* 任务栈：行缓冲 + 下游对话调用 + diary 命令的 diary_entry_t(≈2KB) 余量。
  * MVP 教训：此栈上曾放 8.7KB 快照数组 → 栈溢出 panic，故一律堆分配 + 留足栈。 */
 #define TASK_STACK  (12 * 1024)
@@ -302,6 +305,13 @@ static void dispatch_line(char *line, size_t len)
     /* 临时调试：uix 吐状态栏坐标（音乐入口丢失排查，查完即删） */
     if (len == 3 && strncmp(line, "uix", 3) == 0) {
         scr_home_debug_status_bar();
+        return;
+    }
+    /* 命令路由："persona reset" 恢复内置默认人设（说话规则更新上板用） */
+    if (len == 13 && strncmp(line, "persona reset", 13) == 0) {
+        esp_err_t pe = persona_reset_default();
+        say(pe == ESP_OK ? "人设已恢复默认（含回复限长规则）\r\n"
+                         : "人设恢复失败\r\n");
         return;
     }
     /* 临时调试：dns <host> 看板上域名解析结果（TTS 连不上排查，查完即删） */

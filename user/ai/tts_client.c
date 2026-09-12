@@ -26,6 +26,7 @@
 
 #include "ai_http.h"        /* HTTP POST + SSE 流式封装 */
 #include "minimax_tts.h"    /* MiniMax T2A 后端（M6） */
+#include "doubao_tts.h"     /* 豆包流式 TTS 后端（2026-09 方案 A） */
 
 #define TAG "tts"           /* 本模块日志标签 */
 
@@ -66,6 +67,7 @@ esp_err_t tts_client_init(void)
     s_tts.inited = true;                                    /* 置就绪标志 */
     ESP_LOGI(TAG, "TTS 就绪: %s (model=mimo-v2.5-tts, voice=冰糖)", s_tts.url); /* 打印后端信息 */
     minimax_tts_init();                                     /* 顺带初始化 MiniMax 后端（M6） */
+    doubao_tts_init();                                      /* 顺带初始化豆包后端（2026-09 方案 A） */
     return ESP_OK;                                          /* 初始化成功 */
 }
 
@@ -129,9 +131,16 @@ esp_err_t tts_synthesize(const char *text, const char *style,   /* 文本与风�
     ESP_RETURN_ON_FALSE(s_tts.inited && text && text[0],
                         ESP_ERR_INVALID_ARG, TAG, "bad arg");
 
-    /* ---- 后端选择（M6）：MiniMax key 已配置 → 走 T2A v2（24k pcm 直出）；
-     * 否则走 MiMo 伪流式（chat.completions + SSE hex 块）。
-     * 注：MiniMax 无自然语言 style 字段，style 仅 MiMo 路径生效。 ---- */
+    /* ---- 后端选择（2026-09 方案 A）：豆包已配置 → 首选（真流式，首包最快）；
+     * 豆包失败/未配置且 MiniMax key 已配置 → T2A v2 整段；
+     * 都不行 → MiMo 伪流式兜底。style 仅 MiMo 路径生效。 ---- */
+    if (doubao_tts_configured()) {                          /* 豆包 key 已配置：首选 */
+        esp_err_t derr = doubao_tts_synthesize_stream(text, on_audio, ctx);         /* 流式合成 */
+        if (derr == ESP_OK) {                               /* 成功直接返回 */
+            return ESP_OK;
+        }
+        ESP_LOGW(TAG, "豆包合成失败(%s)，回退 MiniMax", esp_err_to_name(derr));      /* 记录回退 */
+    }
     if (minimax_tts_configured()) {                         /* MiniMax key 已配置 */
         int16_t *pcm = NULL;                                /* 整段 PCM 输出 */
         size_t samples = 0;                                 /* 样本数 */

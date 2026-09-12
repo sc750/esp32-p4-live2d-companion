@@ -86,16 +86,33 @@ static esp_err_t http_common_setup(esp_http_client_handle_t *out,
     return ESP_OK;
 }
 
-/** SSE 内部实现（调用方持锁） */
+/** SSE/行式 内部实现（调用方持锁）；sse_mode=true 按 "data:" 行（OpenAI 系），false 整行 JSON（豆包 chunked） */
 static esp_err_t post_sse_inner(const char *url, const char *api_key,
+                                const char *const *extra_headers,
                                 const char *json_body, ai_sse_cb_t on_data,
-                                void *ctx, int recv_timeout_s)
+                                void *ctx, int recv_timeout_s, bool sse_mode)
 {
     esp_http_client_handle_t client = NULL;
     int timeout_ms = (recv_timeout_s > 0 ? recv_timeout_s : 10) * 1000;
     esp_err_t err = http_common_setup(&client, url, api_key, json_body, timeout_ms);
     if (err != ESP_OK) {
         return err;
+    }
+    if (extra_headers) {                                /* 追加自定义鉴权头（豆包 X-Api-* 等） */
+        for (int i = 0; extra_headers[i]; i++) {
+            const char *sep = strchr(extra_headers[i], ':');
+            if (sep) {                                  /* 按 "Key: Value" 拆 */
+                char k[64];
+                size_t klen = (size_t)(sep - extra_headers[i]);
+                if (klen < sizeof(k)) {
+                    memcpy(k, extra_headers[i], klen);
+                    k[klen] = '\0';
+                    const char *v = sep + 1;
+                    if (*v == ' ') v++;                 /* 跳过冒号后的空格 */
+                    esp_http_client_set_header(client, k, v);
+                }
+            }
+        }
     }
 
     int status = esp_http_client_get_status_code(client);
@@ -144,6 +161,8 @@ static esp_err_t post_sse_inner(const char *url, const char *api_key,
                 if (strcmp(payload, "[DONE]") == 0) {
                     goto out;                           /* 服务端收尾 */
                 }
+            } else if (!sse_mode && line[0] != '\0') {
+                on_data(line, ctx);                     /* 行式模式：非空行整行回调 */
             }
             /* 非 data 行（空行/注释/event:）忽略 */
         }
@@ -169,7 +188,26 @@ esp_err_t ai_http_post_sse(const char *url, const char *api_key,
         ESP_LOGW(TAG, "网络锁等待超时（有请求卡 150s+）");      /* 极端拥堵告警 */
         return ESP_ERR_TIMEOUT;                         /* 放弃本次 */
     }
-    esp_err_t r = post_sse_inner(url, api_key, json_body, on_data, ctx, recv_timeout_s);
+    esp_err_t r = post_sse_inner(url, api_key, NULL, json_body, on_data, ctx,
+                                 recv_timeout_s, true);
+    if (s_net_lock) {                                   /* 归还锁（若存在） */
+        xSemaphoreGive(s_net_lock);                     /* 释放通道 */
+    }
+    return r;                                           /* 返回内部结果 */
+}
+
+/** 行式流外壳：持全局网络锁再进内部实现（豆包 chunked JSON 行） */
+esp_err_t ai_http_post_lines(const char *url, const char *api_key,
+                             const char *const *extra_headers,
+                             const char *json_body, ai_sse_cb_t on_line,
+                             void *ctx, int recv_timeout_s)
+{
+    if (s_net_lock && xSemaphoreTake(s_net_lock, pdMS_TO_TICKS(150000)) != pdTRUE) {
+        ESP_LOGW(TAG, "网络锁等待超时（有请求卡 150s+）");      /* 极端拥堵告警 */
+        return ESP_ERR_TIMEOUT;                         /* 放弃本次 */
+    }
+    esp_err_t r = post_sse_inner(url, api_key, extra_headers, json_body, on_line,
+                                 ctx, recv_timeout_s, false);
     if (s_net_lock) {                                   /* 归还锁（若存在） */
         xSemaphoreGive(s_net_lock);                     /* 释放通道 */
     }

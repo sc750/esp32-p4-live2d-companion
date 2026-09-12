@@ -54,6 +54,20 @@ esp_err_t ai_http_post_sse(const char *url, const char *api_key,
                            void *ctx, int recv_timeout_s);
 
 /**
+ * @brief POST JSON 并按"整行 JSON"逐行回调（行式流，豆包 chunked 用）
+ *
+ * 与 post_sse 的差异：不要求行首 "data:" 前缀，每个非空行整行递给回调
+ * （豆包 V3 chunked 响应是换行分隔的 JSON：{"code":0,"data":"<base64>"}）。
+ * Bearer 之外可追加自定义请求头（X-Api-App-Id 等豆包鉴权头）。
+ *
+ * @param extra_headers 以 NULL 结尾的 "Key: Value" 字符串数组（可为 NULL）
+ */
+esp_err_t ai_http_post_lines(const char *url, const char *api_key,
+                             const char *const *extra_headers,
+                             const char *json_body, ai_sse_cb_t on_line,
+                             void *ctx, int recv_timeout_s);
+
+/**
  * @brief POST JSON 并收完整响应 body（非流式）
  *
  * @param resp_buf  响应缓冲（调用方提供，自动补 '\0'）

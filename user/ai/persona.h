@@ -43,6 +43,12 @@ const char *persona_base(void);
  */
 esp_err_t persona_set(const char *name, const char *base);
 
+/**
+ * @brief 人设恢复为内置默认（含最新说话规则，如回复限长；立即落盘）
+ * @note  串口 "persona reset" 命令用；代码更新默认人设后，板端执行一次即生效
+ */
+esp_err_t persona_reset_default(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -44,6 +44,17 @@ bool minimax_tts_configured(void);
 esp_err_t minimax_tts_synthesize(const char *text,
                                  int16_t **pcm_out, size_t *samples_out);
 
+/**
+ * @brief MP3 裸流 → PCM 整段解码（feed 式，共享给 doubao_tts 复用）
+ *
+ * @param mp3        MP3 字节流（24kHz/mono/16bit 假定，采样率由流内帧头决定）
+ * @param mp3_len    字节数
+ * @param pcm_out    成功时输出 PCM 缓冲（PSRAM，调用方 free）
+ * @param samples_out 输出样本数（16bit mono）
+ */
+esp_err_t minimax_tts_mp3_decode(const uint8_t *mp3, size_t mp3_len,
+                                 int16_t **pcm_out, size_t *samples_out);
+
 #ifdef __cplusplus
 }
 #endif
