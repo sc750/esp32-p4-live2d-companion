@@ -343,6 +343,64 @@ char *dialog_ask_stream(const char *user_text, llm_token_cb_t on_token,
     return result;
 }
 
+cJSON *dialog_build_gw_context(void)
+{
+    ESP_RETURN_ON_FALSE(s_dlg.inited, NULL, TAG, "not init");
+    cJSON *root = cJSON_CreateObject();
+    ESP_RETURN_ON_FALSE(root, NULL, TAG, "no mem");
+    if (xSemaphoreTake(s_dlg.lock, pdMS_TO_TICKS(15000)) != pdTRUE) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    build_system_prompt();                              /* 刷新 system prompt（人设+记忆+时间） */
+    cJSON_AddStringToObject(root, "sys", s_dlg.sys_prompt);
+    cJSON *arr = cJSON_CreateArray();                   /* 历史按时间序 */
+    for (int i = 0; i < s_dlg.count; i++) {
+        int idx = (s_dlg.head + i) % CONFIG_AI_DIALOG_HISTORY_ROUNDS;
+        cJSON *mu = cJSON_CreateObject();
+        cJSON_AddStringToObject(mu, "role", "user");
+        cJSON_AddStringToObject(mu, "content", s_dlg.rounds[idx].user);
+        cJSON_AddItemToArray(arr, mu);
+        cJSON *ma = cJSON_CreateObject();
+        cJSON_AddStringToObject(ma, "role", "assistant");
+        cJSON_AddStringToObject(ma, "content", s_dlg.rounds[idx].reply);
+        cJSON_AddItemToArray(arr, ma);
+    }
+    cJSON_AddItemToObject(root, "history", arr);
+    xSemaphoreGive(s_dlg.lock);
+    return root;
+}
+
+esp_err_t dialog_commit_gw_round(const char *user_text, const char *reply)
+{
+    ESP_RETURN_ON_FALSE(s_dlg.inited && user_text && reply,
+                        ESP_ERR_INVALID_STATE, TAG, "not init");
+    if (xSemaphoreTake(s_dlg.lock, pdMS_TO_TICKS(15000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    size_t ulen = strlen(user_text);
+    char *user_copy = heap_caps_malloc(ulen + 1, MALLOC_CAP_SPIRAM);
+    char *reply_copy = heap_caps_malloc(strlen(reply) + 1, MALLOC_CAP_SPIRAM);
+    if (user_copy) {                                    /* 与 ask 同款消毒 */
+        memcpy(user_copy, user_text, ulen + 1);
+        utf8_sanitize(user_copy);
+    }
+    if (reply_copy) {
+        memcpy(reply_copy, reply, strlen(reply) + 1);
+        utf8_sanitize(reply_copy);
+    }
+    if (user_copy && reply_copy) {
+        history_push(user_copy, reply_copy);            /* 入历史环（接管所有权） */
+    } else {
+        free(user_copy);                                /* 拷贝不全就算了 */
+        free(reply_copy);
+    }
+    memory_extract_note_round(user_copy, reply);        /* 摘要提取投喂 */
+    diary_note_round();                                 /* 日记素材轮数 +1 */
+    xSemaphoreGive(s_dlg.lock);
+    return ESP_OK;
+}
+
 /** 持锁版：真实流程（历史/组包/LLM/拼装） */
 static char *dialog_ask_locked(const char *user_text, llm_token_cb_t on_token,
                                dialog_sentence_cb_t on_sentence, void *ctx)

@@ -55,6 +55,12 @@
 #define EVT_HOLD_STOP   BIT1    /* 松开沿：停止录音并走管线 */
 #define EVT_ASR_RESULT  BIT2    /* 网关流式 ASR 结果到达（步骤 2） */
 #define EVT_TTS_DONE    BIT3    /* 网关 TTS 推流结束（步骤 3） */
+#define EVT_REPLY_DONE  BIT4    /* 网关 LLM 完整回复到达（步骤 4） */
+
+/* 网关全流水线的回复状态（步骤 4） */
+static char *s_gw_reply = NULL;         /* 网关完整回复（WS 任务写入，管线任务取走） */
+static char s_gw_sub[2048];             /* 流式字幕累积（reply_sentence 逐句追加） */
+static volatile bool s_gw_chat_err;     /* 网关 LLM 失败标志 */
 
 /* 串口文本播报的播放状态（ring buffer + 重采样残样 + 诊断计数）。
  * 定义提前到 process_wav 之前——网关 TTS 路径（步骤 3）在 process_wav
@@ -96,6 +102,7 @@ static volatile bool s_gw_asr_err;      /* 网关 ASR 失败标志（区别于�
 static void on_tts_audio(const int16_t *pcm, size_t samples, void *ctx);
 static esp_err_t spk_ring_begin(void);
 static void gw_tts_pcm_cb(const uint8_t *pcm, size_t bytes);
+static void ui_text(const char *t);
 static uint32_t s_gw_tts_fed = 0;   /* 诊断：本轮已喂 ring 的 PCM 字节 */
 static void player_task(void *arg);
 
@@ -111,6 +118,17 @@ static void gw_msg_handler(const char *type, const char *data)
         free(s_gw_asr_text);
         s_gw_asr_text = NULL;
         xEventGroupSetBits(s_vp.evt, EVT_ASR_RESULT);
+    } else if (strcmp(type, "reply_sentence") == 0) {   /* 步骤 4：LLM 断句流式字幕 */
+        strlcat(s_gw_sub, data ? data : "", sizeof(s_gw_sub));
+        ui_text(s_gw_sub);                              /* 直接刷字幕（桥自持锁，任意任务安全） */
+    } else if (strcmp(type, "reply_done") == 0) {       /* 步骤 4：完整回复到达 */
+        free(s_gw_reply);
+        s_gw_reply = (data && data[0]) ? strdup(data) : NULL;
+        ui_text(s_gw_reply ? s_gw_reply : s_gw_sub);    /* 定稿字幕 */
+        xEventGroupSetBits(s_vp.evt, EVT_REPLY_DONE);
+    } else if (strcmp(type, "chat_error") == 0) {       /* 步骤 4：网关 LLM 失败 */
+        s_gw_chat_err = true;
+        xEventGroupSetBits(s_vp.evt, EVT_REPLY_DONE);
     } else if (strcmp(type, "tts_end") == 0) {          /* 网关 TTS 推流结束（步骤 3） */
         s_gw_tts_end = true;                            /* 管线任务据它置 synth_done */
         xEventGroupSetBits(s_vp.evt, EVT_TTS_DONE);     /* 唤醒等待方 */
@@ -148,6 +166,82 @@ static esp_err_t gw_asr_collect(char **text_out)
     }
     s_gw_asr_err = false;
     return ESP_ERR_TIMEOUT;                             /* 真超时：允许回退本地识别 */
+}
+
+/**
+ * @brief 网关全流水线一轮（步骤 4）：LLM+TTS 都在网关侧，真并行
+ *
+ * 流程：上下文组装上行 → 网关流式 LLM（断句即流式字幕 + 逐句豆包合成）
+ * → PCM 帧下行喂 ring。设备只管放音，LLM 生成期间 TTS 已在跑。
+ *
+ * @param user_text 用户输入（识别结果；仅读取）
+ * @param reply_out 成功时输出完整回复文本（堆上，调用方 free）
+ * @return true 全流程成功；false 失败（调用方回退本地流程）
+ */
+static bool gw_dialog_round(const char *user_text, char **reply_out)
+{
+    *reply_out = NULL;
+    cJSON *ctx = dialog_build_gw_context();             /* 设备组装上下文（状态源在板上） */
+    if (!ctx) {
+        return false;
+    }
+    cJSON_AddStringToObject(ctx, "type", "chat");
+    cJSON_AddStringToObject(ctx, "text", user_text);
+    char *jtxt = cJSON_PrintUnformatted(ctx);
+    cJSON_Delete(ctx);
+    if (!jtxt) {
+        return false;
+    }
+    s_gw_sub[0] = '\0';                                 /* 字幕累积复位 */
+    s_gw_chat_err = false;
+    free(s_gw_reply);                                   /* 上轮残留防御 */
+    s_gw_reply = NULL;
+    if (spk_ring_begin() != ESP_OK) {                   /* ring + 播放器先就位（PCM 随到随播） */
+        cJSON_free(jtxt);
+        return false;
+    }
+    music_notify_voice_start();                         /* TTS 抢占音乐 */
+    esp_err_t serr = gw_client_send_text(jtxt);         /* 一条消息触发网关 LLM+TTS 流水线 */
+    cJSON_free(jtxt);
+    if (serr != ESP_OK) {
+        ESP_LOGW(TAG, "网关 chat 上行失败");
+        return false;
+    }
+    /* 等 TTS 推流结束（字幕在期间流式刷新；上限 90s 覆盖长回复） */
+    EventBits_t bits = xEventGroupWaitBits(s_vp.evt, EVT_TTS_DONE,
+                                           pdTRUE, pdFALSE,
+                                           pdMS_TO_TICKS(90000));
+    bool ok = (bits & EVT_TTS_DONE) && !s_gw_chat_err && s_gw_reply;
+    if (ok) {
+        dialog_commit_gw_round(user_text, s_gw_reply);  /* 历史入环 + 摘要/日记素材 */
+        *reply_out = s_gw_reply;                        /* 所有权转移 */
+        s_gw_reply = NULL;
+        ESP_LOGI(TAG, "网关 TTS 已喂 ring %uB", (unsigned)s_gw_tts_fed);
+        s_spk.synth_done = true;                        /* 播放器排空 ring 后自退 */
+        s_gw_tts_end = false;
+        int wait_ms = 30000;                            /* 排空上限（防御） */
+        while (!s_spk.player_done && wait_ms > 0) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            wait_ms -= 50;
+        }
+    } else {
+        ESP_LOGW(TAG, "网关流水线未完成（err=%d reply=%p）",
+                 s_gw_chat_err, s_gw_reply);
+        free(s_gw_reply);
+        s_gw_reply = NULL;
+        s_spk.synth_done = true;                        /* 强制收尾播放器 */
+        s_gw_tts_end = false;
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+    if (s_spk.ring) {                                   /* 会话资源清理 */
+        vStreamBufferDelete(s_spk.ring);
+        s_spk.ring = NULL;
+    }
+    if (s_spk.ring_mem) {
+        free(s_spk.ring_mem);
+        s_spk.ring_mem = NULL;
+    }
+    return ok;
 }
 
 /* ---- 按句 TTS 预取流水线的常量与数据结构 ---- */
@@ -529,94 +623,103 @@ static void process_wav(char *wav, size_t wav_len)
     ESP_LOGI(TAG, "⏱ ASR: %lldms（含上传）",             /* 打印 ASR 分段耗时 */
              (esp_timer_get_time() - t0) / 1000);       /* 毫秒换算 */
 
-    s_reply_len = 0;                                    /* 回复累积游标复位 */
-    s_reply_text[0] = '\0';                             /* 回复缓冲清零 */
-    s_tts_batch_len = 0;                                /* 批次缓冲复位（上轮残留防御） */
-    s_tts_batch_count = 0;                              /* 批次数复位（首批回到小阈值） */
-    __atomic_store_n(&s_tts_pending, 0, __ATOMIC_RELAXED);      /* 未播计数清零 */
-    s_tts_input_done = false;                           /* LLM 输入未完成标志 */
-    s_tts_cancel = false;                               /* 复位取消闸门（上轮音乐抢占遗留） */
-    s_tts_stream_active = true;                         /* 按句 TTS 流水线激活 */
-    s_reply_last_flush_us = esp_timer_get_time();       /* 字幕节流基准复位 */
-    /* 豆包启用时走环形缓冲真流式整句播报（边合成边播，首声 ~1s）；
-     * 按句流水线对豆包无意义（TLS 锁下 TTS 本来就要等 LLM 结束）。 */
-    bool gw_tts = gw_client_is_connected();             /* 步骤 3：网关 TTS 下行可用 */
-    char *reply = dialog_ask_stream(text, on_reply_token,
-                                    gw_tts ? NULL : on_reply_sentence, NULL);   /* 流式对话 */
-    free(text);                                         /* 识别文本用完释放 */
-    if (reply) {                                        /* LLM 回复成功 */
-        ui_text(reply);                                 /* 字幕显示完整回复 */
-        if (gw_tts) {                                   /* 网关流式 TTS（步骤 3）：文本上行，PCM 下行 */
-            s_tts_stream_active = false;                /* 未走按句流水线 */
-            ui_state(DIALOG_STATE_SPEAKING);            /* 绿点亮起 */
-            music_notify_voice_start();                 /* TTS 抢占音乐（与按句路径同语义） */
-            bool played = false;                        /* 本轮是否已成功走网关播报 */
-            s_gw_tts_fed = 0;
-            if (spk_ring_begin() == ESP_OK) {           /* ring + 播放器就位 */
-                xEventGroupClearBits(s_vp.evt, EVT_TTS_DONE);
-                s_gw_tts_end = false;
-                cJSON *jroot = cJSON_CreateObject();    /* 组 tts 消息（cJSON 转义防中文/引号） */
-                cJSON_AddStringToObject(jroot, "type", "tts");
-                cJSON_AddStringToObject(jroot, "data", reply);
-                char *jtxt = cJSON_PrintUnformatted(jroot);
-                cJSON_Delete(jroot);
-                esp_err_t serr = gw_client_send_text(jtxt);     /* 文本上行（触发网关合成） */
-                cJSON_free(jtxt);
-                if (serr == ESP_OK) {                   /* 等网关推流完成（45s 上限） */
-                    EventBits_t bits = xEventGroupWaitBits(s_vp.evt, EVT_TTS_DONE,
-                                                           pdTRUE, pdFALSE,
-                                                           pdMS_TO_TICKS(45000));
-                    if (bits & EVT_TTS_DONE) {          /* 推流完：等播放器排空 ring */
-                        ESP_LOGI(TAG, "网关 TTS 已喂 ring %uB", (unsigned)s_gw_tts_fed);
-                        s_spk.synth_done = true;        /* 播放器排空后自退 */
-                        s_gw_tts_end = false;
-                        int wait_ms = 30000;            /* 排空上限（2MB ring ≈ 32s，防御） */
-                        while (!s_spk.player_done && wait_ms > 0) {
-                            vTaskDelay(pdMS_TO_TICKS(50));
-                            wait_ms -= 50;
+    /* ---- 步骤 4：网关全流水线（LLM+TTS 在网关侧，真并行）优先 ---- */
+    char *reply = NULL;
+    bool done_gw = false;
+    if (gw_client_is_connected()) {
+        ui_state(DIALOG_STATE_THINKING);                /* 橙色（LLM 思考中） */
+        done_gw = gw_dialog_round(text, &reply);
+    }
+    if (!done_gw) {                                     /* 本地回退：原 dialog + 播报全流程 */
+        s_reply_len = 0;                                /* 回复累积游标复位 */
+        s_reply_text[0] = '\0';                         /* 回复缓冲清零 */
+        s_tts_batch_len = 0;                            /* 批次缓冲复位（上轮残留防御） */
+        s_tts_batch_count = 0;                          /* 批次数复位（首批回到小阈值） */
+        __atomic_store_n(&s_tts_pending, 0, __ATOMIC_RELAXED);      /* 未播计数清零 */
+        s_tts_input_done = false;                       /* LLM 输入未完成标志 */
+        s_tts_cancel = false;                           /* 复位取消闸门（上轮音乐抢占遗留） */
+        s_tts_stream_active = true;                     /* 按句 TTS 流水线激活 */
+        s_reply_last_flush_us = esp_timer_get_time();   /* 字幕节流基准复位 */
+        /* 豆包启用时走环形缓冲真流式整句播报（边合成边播，首声 ~1s）；
+         * 按句流水线对豆包无意义（TLS 锁下 TTS 本来就要等 LLM 结束）。 */
+        bool db_stream = doubao_tts_configured();
+        reply = dialog_ask_stream(text, on_reply_token,
+                                  db_stream ? NULL : on_reply_sentence, NULL);        /* 流式对话 */
+        if (reply) {                                    /* LLM 回复成功 */
+            ui_text(reply);                             /* 字幕显示完整回复 */
+            if (db_stream) {                            /* 豆包：整句流式播报 */
+                s_tts_stream_active = false;            /* 未走按句流水线 */
+                ui_state(DIALOG_STATE_SPEAKING);        /* 绿点亮起 */
+                music_notify_voice_start();             /* TTS 抢占音乐（与按句路径同语义） */
+                bool played = false;                    /* 本轮是否已成功走网关播报 */
+                s_gw_tts_fed = 0;
+                if (spk_ring_begin() == ESP_OK) {       /* ring + 播放器就位 */
+                    xEventGroupClearBits(s_vp.evt, EVT_TTS_DONE);
+                    s_gw_tts_end = false;
+                    cJSON *jroot = cJSON_CreateObject();    /* 组 tts 消息（cJSON 转义防中文/引号） */
+                    cJSON_AddStringToObject(jroot, "type", "tts");
+                    cJSON_AddStringToObject(jroot, "data", reply);
+                    char *jtxt = cJSON_PrintUnformatted(jroot);
+                    cJSON_Delete(jroot);
+                    esp_err_t serr = gw_client_send_text(jtxt);     /* 文本上行（触发网关合成） */
+                    cJSON_free(jtxt);
+                    if (serr == ESP_OK) {                   /* 等网关推流完成（45s 上限） */
+                        EventBits_t bits = xEventGroupWaitBits(s_vp.evt, EVT_TTS_DONE,
+                                                               pdTRUE, pdFALSE,
+                                                               pdMS_TO_TICKS(45000));
+                        if (bits & EVT_TTS_DONE) {          /* 推流完：等播放器排空 ring */
+                            ESP_LOGI(TAG, "网关 TTS 已喂 ring %uB", (unsigned)s_gw_tts_fed);
+                            s_spk.synth_done = true;        /* 播放器排空后自退 */
+                            s_gw_tts_end = false;
+                            int wait_ms = 30000;            /* 排空上限（2MB ring ≈ 32s，防御） */
+                            while (!s_spk.player_done && wait_ms > 0) {
+                                vTaskDelay(pdMS_TO_TICKS(50));
+                                wait_ms -= 50;
+                            }
+                            played = true;
+                        } else {                            /* 超时：强制收尾 */
+                            ESP_LOGW(TAG, "网关 TTS 超时");
+                            s_spk.synth_done = true;
+                            s_gw_tts_end = false;
+                            vTaskDelay(pdMS_TO_TICKS(200)); /* 给播放器一点排空时间 */
                         }
-                        played = true;
-                    } else {                            /* 超时：强制收尾 */
-                        ESP_LOGW(TAG, "网关 TTS 超时");
-                        s_spk.synth_done = true;
-                        s_gw_tts_end = false;
-                        vTaskDelay(pdMS_TO_TICKS(200)); /* 给播放器一点排空时间 */
+                    }
+                    if (s_spk.ring) {                       /* 会话资源清理 */
+                        vStreamBufferDelete(s_spk.ring);
+                        s_spk.ring = NULL;
+                    }
+                    if (s_spk.ring_mem) {
+                        free(s_spk.ring_mem);
+                        s_spk.ring_mem = NULL;
                     }
                 }
-                if (s_spk.ring) {                       /* 会话资源清理 */
-                    vStreamBufferDelete(s_spk.ring);
-                    s_spk.ring = NULL;
+                if (!played) {                              /* 网关路径失败：回退本地豆包流式 */
+                    ESP_LOGW(TAG, "网关 TTS 不可用，回退本地合成");
+                    voice_pipeline_speak(reply);            /* 环形缓冲边合成边播（阻塞至播完） */
                 }
-                if (s_spk.ring_mem) {
-                    free(s_spk.ring_mem);
-                    s_spk.ring_mem = NULL;
+            } else {                                    /* MiniMax/MiMo：按句流水线 */
+                tts_batch_flush();                      /* 收尾：把没凑满批的尾巴发走 */
+                s_tts_input_done = true;                /* 标记 LLM 输出完毕（不再有新句） */
+                /* 等语音任务播完已入队短句；LLM 和第一个 TTS 已在此前并行。 */
+                while (__atomic_load_n(&s_tts_pending, __ATOMIC_RELAXED) > 0) {     /* 还有句子没播完 */
+                    vTaskDelay(pdMS_TO_TICKS(50));      /* 50ms 轮询等待 */
                 }
             }
-            if (!played) {                              /* 网关路径失败：回退本地豆包流式 */
-                ESP_LOGW(TAG, "网关 TTS 不可用，回退本地合成");
-                voice_pipeline_speak(reply);            /* 环形缓冲边合成边播（阻塞至播完） */
-            }
-        } else {                                        /* MiniMax/MiMo：按句流水线 */
-            tts_batch_flush();                          /* 收尾：把没凑满批的尾巴发走 */
-            s_tts_input_done = true;                    /* 标记 LLM 输出完毕（不再有新句） */
-            /* 等语音任务播完已入队短句；LLM 和第一个 TTS 已在此前并行。 */
-            while (__atomic_load_n(&s_tts_pending, __ATOMIC_RELAXED) > 0) {     /* 还有句子没播完 */
-                vTaskDelay(pdMS_TO_TICKS(50));          /* 50ms 轮询等待 */
-            }
+        } else {                                        /* LLM 失败 */
+            s_tts_batch_len = 0;                        /* 未成批的残句一并作废 */
+            s_tts_stream_active = false;                /* 流水线停用 */
+            ui_text("……脑子突然一片空白，再说一次？");    /* 字幕提示 */
+            ui_state(DIALOG_STATE_IDLE);                /* 状态点熄灭 */
         }
-        ESP_LOGI(TAG, "⏱ 全程: %lldms（松手→播完）",     /* 打印全程延迟 */
-                 (esp_timer_get_time() - t0) / 1000);   /* 毫秒换算 */
-        rig_rig_set_mouth(RIG_MOUTH_CLOSED);            /* 播完闭嘴 */
-        rig_rig_set_mouth(RIG_MOUTH_AUTO);              /* 释放口型控制交还 idle */
-        s_tts_stream_active = false;                    /* 流水线停用 */
-        ui_state(DIALOG_STATE_IDLE);                    /* 状态点熄灭 */
-        free(reply);                                    /* 释放完整回复 */
-    } else {                                            /* LLM 失败 */
-        s_tts_batch_len = 0;                            /* 未成批的残句一并作废 */
-        s_tts_stream_active = false;                    /* 流水线停用 */
-        ui_text("……脑子突然一片空白，再说一次？");        /* 字幕提示 */
-        ui_state(DIALOG_STATE_IDLE);                    /* 状态点熄灭 */
     }
+    free(text);                                         /* 识别文本用完释放 */
+    ESP_LOGI(TAG, "⏱ 全程: %lldms（松手→播完）",         /* 打印全程延迟 */
+             (esp_timer_get_time() - t0) / 1000);       /* 毫秒换算 */
+    rig_rig_set_mouth(RIG_MOUTH_CLOSED);                /* 播完闭嘴 */
+    rig_rig_set_mouth(RIG_MOUTH_AUTO);                  /* 释放口型控制交还 idle */
+    s_tts_stream_active = false;                        /* 流水线停用 */
+    ui_state(DIALOG_STATE_IDLE);                        /* 状态点熄灭 */
+    free(reply);                                        /* 释放完整回复（网关/本地共用） */
 }
 
 /* ---------- TTS 播报（M2 串口文本路径，ring buffer 架构） ---------- */

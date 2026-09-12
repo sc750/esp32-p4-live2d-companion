@@ -57,6 +57,12 @@ DOUBAO_API_KEY = "REDACTED_DOUBAO_KEY"
 DOUBAO_RESOURCE = "seed-tts-2.0"
 DOUBAO_VOICE = "zh_female_vv_uranus_bigtts"
 
+# DeepSeek LLM（步骤 4：流式生成 + 断句 + 逐句 TTS 编排）
+DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
+DEEPSEEK_KEY = "REDACTED_DEEPSEEK_KEY"
+DEEPSEEK_MODEL = "deepseek-flash"
+TERMINAL_PUNCT = "。！？!?；;\n"          # 断句终止符（软断句交给标点密度，这里求稳）
+
 
 def xfyun_auth_url() -> str:
     """讯飞 IAT v2 鉴权 URL（HMAC-SHA256 签名，官方规则）。"""
@@ -179,9 +185,13 @@ class DeviceSession:
     def __init__(self, ws):
         self.ws = ws                     # 设备侧连接
         self.asr: AsrSession | None = None
+        self.send_lock = asyncio.Lock()  # LLM/TTS 多任务并发推送：所有发送串行化
 
-    async def send(self, obj: dict):
-        await self.ws.send(json.dumps(obj))
+    async def send(self, obj):
+        # dict → JSON；str/bytes 原样。加锁防并发 send 帧交错。
+        data = json.dumps(obj) if isinstance(obj, (dict, list)) else obj
+        async with self.send_lock:
+            await self.ws.send(data)
 
     async def handle_text(self, message: str):
         try:
@@ -223,6 +233,8 @@ class DeviceSession:
                 self.asr = None                         # 会话已消费/作废，必须清引用
         elif mtype == "tts":                            # 步骤 3：TTS 下行
             asyncio.create_task(self.run_tts(data))
+        elif mtype == "chat":                           # 步骤 4：LLM+TTS 全流水线
+            asyncio.create_task(self.run_chat(msg))
         elif mtype == "text":
             log.info("设备文本: %s", data)
             await self.send({"type": "echo", "data": data})
@@ -233,11 +245,8 @@ class DeviceSession:
         if self.asr:                                    # 仅会话内的音频帧有效
             await self.asr.feed(pcm)
 
-    async def run_tts(self, text: str):
-        """豆包流式 TTS：整段文本 → chunked PCM 块逐帧推回设备，完成发 tts_end。"""
-        if not text:
-            await self.send({"type": "tts_end"})
-            return
+    async def stream_doubao(self, text: str):
+        """豆包流式合成一段文本：chunked PCM 块逐帧推回设备（不收尾）。"""
         headers = {
             "X-Api-Key": DOUBAO_API_KEY,
             "X-Api-Resource-Id": DOUBAO_RESOURCE,
@@ -250,51 +259,118 @@ class DeviceSession:
                 "audio_params": {"format": "pcm", "sample_rate": 24000, "channel": 1},
             },
         }
-        t0 = asyncio.get_event_loop().time()
-        first = True
+        async with aiohttp.ClientSession() as http:
+            async with http.post(DOUBAO_TTS_URL, json=body, headers=headers,
+                                 timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"doubao HTTP {resp.status}: "
+                                       f"{(await resp.text())[:150]}")
+                buf = b""
+                async for chunk in resp.content.iter_any():
+                    buf += chunk
+                    while b"\n" in buf:                     # 按行切（JSON 行式）
+                        line, buf = buf.split(b"\n", 1)
+                        if not line.strip():
+                            continue
+                        msg = json.loads(line)
+                        code = msg.get("code", 0)
+                        if code != 0 and code != 20000000:
+                            log.error("豆包 TTS 错误 %s: %s", code, msg.get("message"))
+                            raise RuntimeError(f"doubao {code}")
+                        data = msg.get("data")
+                        if data:                            # base64 PCM 块 → 二进制推回
+                            await self.send(base64.b64decode(data))
+
+    async def run_tts(self, text: str):
+        """步骤 3 入口：整段文本流式合成，完成发 tts_end。"""
+        if not text:
+            await self.send({"type": "tts_end"})
+            return
         try:
-            async with aiohttp.ClientSession() as http:
-                async with http.post(DOUBAO_TTS_URL, json=body,
-                                     headers=headers,
-                                     timeout=aiohttp.ClientTimeout(total=60)) as resp:
-                    if resp.status != 200:
-                        log.error("豆包 TTS HTTP %d: %.200s", resp.status,
-                                  (await resp.text())[:200])
-                        await self.send({"type": "tts_end"})
-                        return
-                    buf = b""
-                    async for chunk in resp.content.iter_any():
-                        buf += chunk
-                        while b"\n" in buf:                 # 按行切（JSON 行式）
-                            line, buf = buf.split(b"\n", 1)
-                            if not line.strip():
-                                continue
-                            msg = json.loads(line)
-                            code = msg.get("code", 0)
-                            if code != 0 and code != 20000000:
-                                log.error("豆包 TTS 错误 %s: %s", code, msg.get("message"))
-                                raise RuntimeError(f"doubao {code}")
-                            data = msg.get("data")
-                            if data:                        # base64 PCM 块 → 二进制推回
-                                if first:
-                                    log.info("TTS 首块延迟 %.0f ms",
-                                             (asyncio.get_event_loop().time() - t0) * 1000)
-                                    first = False
-                                await self.ws.send(base64.b64decode(data))
+            await self.stream_doubao(text)
         except Exception as e:
             log.error("TTS 流失败: %r", e)
         await self.send({"type": "tts_end"})                # 成功失败都收尾（防设备卡等）
 
-    async def _abort_asr(self):
-        asr, self.asr = self.asr, None
-        try:
-            if asr.ws:
-                await asr.ws.close()
-        except Exception:
-            pass
-        if asr.rx_task:
-            asr.rx_task.cancel()
+    @staticmethod
+    def _split_sentence(buf: str):
+        """断句：扫到终止标点即切一句（含标点）；没有返回 None。"""
+        for i, ch in enumerate(buf):
+            if ch in TERMINAL_PUNCT:
+                return buf[:i + 1]
+        return None
 
+    async def run_chat(self, msg: dict):
+        """步骤 4：流式 LLM → 断句 → 逐句豆包流式（LLM 生成与 TTS 合成真并行）。"""
+        messages = [{"role": "system", "content": msg.get("sys", "")}]
+        messages += msg.get("history", [])
+        messages.append({"role": "user", "content": msg.get("text", "")})
+        q: asyncio.Queue = asyncio.Queue()
+        full = {"text": ""}
+
+        async def llm_stream():
+            headers = {"Authorization": f"Bearer {DEEPSEEK_KEY}",
+                       "Content-Type": "application/json"}
+            body = {"model": DEEPSEEK_MODEL, "messages": messages, "stream": True}
+            buf = ""
+            try:
+                async with aiohttp.ClientSession() as http:
+                    async with http.post(DEEPSEEK_URL, json=body, headers=headers,
+                                         timeout=aiohttp.ClientTimeout(total=90)) as resp:
+                        if resp.status != 200:
+                            raise RuntimeError(f"deepseek {resp.status}: "
+                                               f"{(await resp.text())[:150]}")
+                        while True:
+                            line = await resp.content.readline()
+                            if not line:
+                                break
+                            line = line.decode("utf-8", "replace").strip()
+                            if not line.startswith("data:"):
+                                continue
+                            payload = line[5:].strip()
+                            if payload == "[DONE]":
+                                break
+                            delta = json.loads(payload)["choices"][0]["delta"]
+                            piece = delta.get("content") or ""
+                            if not piece:
+                                continue
+                            full["text"] += piece
+                            buf += piece
+                            while True:                     # 断句即入队（TTS 边合成）
+                                sent = self._split_sentence(buf)
+                                if sent is None:
+                                    break
+                                buf = buf[len(sent):]
+                                await q.put(sent)
+                                await self.send({"type": "reply_sentence",
+                                                 "data": sent})     # 设备字幕流式刷新
+                    if buf:                                 # 尾句
+                        await q.put(buf)
+            except Exception as e:
+                log.error("LLM 流失败: %r", e)
+                await self.send({"type": "chat_error", "data": str(e)})
+            finally:
+                await q.put(None)                           # 通知 TTS 工匠收工
+                if full["text"]:
+                    await self.send({"type": "reply_done", "data": full["text"]})
+
+        async def tts_worker():
+            while True:
+                sent = await q.get()
+                if sent is None:
+                    break
+                t0 = asyncio.get_event_loop().time()
+                try:
+                    await self.stream_doubao(sent)
+                    log.info("句 TTS 完成 (%.0f ms): %.30s",
+                             (asyncio.get_event_loop().time() - t0) * 1000, sent)
+                except Exception as e:
+                    log.error("句 TTS 失败: %r", e)          # 单句失败不拖垮整段
+
+        worker = asyncio.create_task(tts_worker())
+        await llm_stream()                                  # LLM 完成后 reply_done 已发
+        await worker                                        # 等 TTS 队列排空
+        await self.send({"type": "tts_end"})                # 全部音频推完（设备排空后收尾）
 
 async def handle_device(ws):
     """单个设备连接的会话循环。"""

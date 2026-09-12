@@ -35,6 +35,21 @@
 - 模拟设备协议测试：tts 请求 → 首帧 PCM 561ms → 9 帧 152KB（≈4.8s 音频）927ms 推完 → tts_end
 - 设备侧待语音实测（serial chat 走直连文本通道不经过 process_wav，故串口 chat 不触发网关 TTS）
 
+## 步骤 4 编辑清单（2026-09-12）
+
+| 文件 | 改动 | 结果 |
+|---|---|---|
+| user/ai/dialog_manager.h/.c | 新增 dialog_build_gw_context（sys+历史 JSON，设备保持状态源）/ dialog_commit_gw_round（历史+摘要+日记素材落账，不调 LLM） | ✅ |
+| tools/gateway/gateway.py | run_chat：DeepSeek 流式（SSE）→ 断句 → reply_sentence/reply_done → asyncio.Queue → 逐句豆包流式 PCM 推回；DeviceSession.send 全局串行锁（LLM/TTS 双任务并发推送防帧交错）；chat_error 处理 | ✅ |
+| user/ai/voice_pipeline.c | gw_dialog_round（chat 上行 → EVT_TTS_DONE 等待 90s → 落账 → ring 排空清理）；process_wav 重构：网关流水线优先，本地全流程整体回退；首块 PCM 切 SPEAKING 状态 | ✅ |
+
+### 协议实测（模拟设备）
+- chat → 首句字幕 1671ms / reply_done 1673ms / 首帧 PCM 2217ms / tts_end 2862ms（240KB PCM）
+- 网关编排已实现"LLM 生成与 TTS 合成真并行"（无 TLS 锁限制）
+
+### 预期板上效果
+松手 → ASR 1.3s → LLM 首句+TTS 首包（网关并行 ~2s）→ 首声 ≈ 3.5s（对比直连版 25-35s）
+
 ## 构建证据（2026-09-12）
 - 端到端：板上 gw send → 网关「设备文本: hello-gateway-step1」→ 网关 echo →
   板上「网关→: {"type":"echo",...}」；断线（1006）后 3s 自动重连握手

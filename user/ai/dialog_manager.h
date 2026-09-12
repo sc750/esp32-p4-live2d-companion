@@ -11,6 +11,7 @@
 
 #include <stdbool.h>
 #include "esp_err.h"
+#include "cJSON.h"
 #include "llm_client.h"
 
 #ifdef __cplusplus
@@ -44,6 +45,21 @@ char *dialog_ask(const char *user_text, llm_token_cb_t on_token, void *ctx);
  */
 char *dialog_ask_stream(const char *user_text, llm_token_cb_t on_token,
                         dialog_sentence_cb_t on_sentence, void *ctx);
+
+/**
+ * @brief 组装网关对话上下文（步骤 4：LLM 迁网关，设备保持状态源）
+ * @return cJSON 树 {"sys":"<组装好的 system prompt>",
+ *                  "history":[{"role","content"}...按时间序]}；
+ *         调用方 cJSON_Delete。失败返回 NULL。
+ */
+cJSON *dialog_build_gw_context(void);
+
+/**
+ * @brief 网关轮次落账：与 dialog_ask_stream 的收尾一致
+ *        （历史入环 + 摘要提取投喂 + 日记素材计数），但不调 LLM。
+ * @note  网关回传完整回复后由管线任务调用；user/reply 被拷贝。
+ */
+esp_err_t dialog_commit_gw_round(const char *user_text, const char *reply);
 
 #ifdef __cplusplus
 }
