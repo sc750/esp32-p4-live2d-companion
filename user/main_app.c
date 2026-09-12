@@ -102,7 +102,6 @@ static void on_voice_hold(bool holding, void *ctx)
 {
     (void)ctx;
     if (holding) {
-        voice_pipeline_barge_in();      /* 步骤 5：说话即打断三玖播报（barge-in） */
         music_notify_voice_start();     /* Phase4：按住说话即停音乐（比 TTS 抢占更早介入） */
         voice_pipeline_hold_start();
     } else {
