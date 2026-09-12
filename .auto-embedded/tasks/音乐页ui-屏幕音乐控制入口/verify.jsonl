@@ -1,1 +1,4 @@
-{"_example": {"file": "spec/architecture/index.md", "reason": "示例：删除本行"}}
+{"item": "编译", "evidence": "cmd /c build.bat build exit=0，零 warning 零 error；bin 0x586840B（app 分区余 39%）", "result": "pass"}
+{"item": "烧录+启动", "evidence": "COM41 烧录成功；启动日志：scr_music: 音乐页创建完成 → 列表已建 3 项 → main: 音乐页播放列表: 3 项（SD 未插自动降级网络电台，符合 Phase4 设计）", "result": "pass"}
+{"item": "串口播控命令链", "evidence": "music play 0 → 音源打开失败（Wi-Fi 未连，环境因素）后状态一致回已停止；music pause → 没在播放；music stop → 已停止。无崩溃，渲染 FPS 24", "result": "pass"}
+{"item": "电台实播+屏幕触摸验证", "evidence": "待人工：Wi-Fi AP 'sc' 未找到（reason=201），需先连网；音乐页触摸交互（主页按钮进入/返回/列表点选）需屏上实测", "result": "pending"}
