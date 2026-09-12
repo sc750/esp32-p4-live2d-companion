@@ -31,6 +31,7 @@
 
 #include "scr_home.h"       /* 临时调试：uix 命令吐状态栏坐标 */
 #include "persona.h"        /* persona reset 命令（人设限长规则上板用） */
+#include "gw_client.h"        /* gw 命令（网关通道测试） */
 #include "lwip/netdb.h"     /* 临时调试：dns 命令 getaddrinfo */
 #include "lwip/inet.h"      /* 临时调试：dns 命令 inet_ntoa_r */
 #include "memory_store.h"
@@ -305,6 +306,16 @@ static void dispatch_line(char *line, size_t len)
     /* 临时调试：uix 吐状态栏坐标（音乐入口丢失排查，查完即删） */
     if (len == 3 && strncmp(line, "uix", 3) == 0) {
         scr_home_debug_status_bar();
+        return;
+    }
+    /* 命令路由："gw" 网关状态；"gw send <json>" 发文本（步骤 1 通道测试） */
+    if (len == 2 && strncmp(line, "gw", 2) == 0) {
+        say(gw_client_is_connected() ? "网关: 已连接\r\n" : "网关: 未连接\r\n");
+        return;
+    }
+    if (len >= 9 && strncmp(line, "gw send ", 8) == 0) {
+        esp_err_t ge = gw_client_send_text(line + 8);
+        say(ge == ESP_OK ? "已发送\r\n" : "发送失败（未连接?）\r\n");
         return;
     }
     /* 命令路由："persona reset" 恢复内置默认人设（说话规则更新上板用） */

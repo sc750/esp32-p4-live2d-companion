@@ -29,6 +29,7 @@
 #include "music_service.h"
 #include "chat_console.h"
 #include "voice_pipeline.h"
+#include "gw_client.h"        /* 语音网关 WS 客户端（步骤 1） */
 #include "esp_timer.h"
 #include "rig_model.h"
 #include "rig_lvgl.h"
@@ -286,6 +287,9 @@ void user_app_run(void)
 
     /* 4d. 音乐页接线（Phase 5）：须在 music_service_init 之后（列表要读曲目表） */
     wire_music_ui();
+
+    /* 4e. 语音网关 WS 客户端（网关阶段步骤 1）：仅通道，不影响现有链路 */
+    ESP_ERROR_CHECK(gw_client_init());
 
     /* 5. 角色加载 + 动画渲染（M03 R5b：入住 live2d_area + 触摸表情） */
     static rig_model_t s_model;

@@ -1,0 +1,7 @@
+{
+  "id": "语音网关-ws流水线-流式asr-llm-tts",
+  "title": "语音网关-WS流水线-流式ASR-LLM-TTS",
+  "phase": "EXECUTE",
+  "trace_id": "T-语音网关-ws流水线-流式asr-llm-tts",
+  "status": "active"
+}
