@@ -39,6 +39,7 @@
 #include "asr_client.h"         /* ASR（讯飞/MiMo 双后端） */
 #include "tts_client.h"         /* TTS（MiMo 流式合成） */
 #include "doubao_tts.h"         /* TTS（豆包真流式，2026-09 方案 A） */
+#include "gw_client.h"         /* 语音网关（步骤 2 流式 ASR 上行） */
 #include "dialog_manager.h"     /* LLM 对话（流式断句） */
 #include "rig_rig.h"            /* 口型驱动（rig_rig_set_mouth） */
 #include "app_events.h"         /* dialog_state_t 共享词汇 */
@@ -51,6 +52,7 @@
 /* 事件位：按住说话的按下/松开沿（LVGL 按钮 → 管线任务） */
 #define EVT_HOLD_START  BIT0    /* 按下沿：开始录音 */
 #define EVT_HOLD_STOP   BIT1    /* 松开沿：停止录音并走管线 */
+#define EVT_ASR_RESULT  BIT2    /* 网关流式 ASR 结果到达（步骤 2） */
 
 /* 流式字幕刷新节流：两个 token 之间至少隔 100ms 才刷一次 LVGL */
 #define FLUSH_MIN_US    (100 * 1000)
@@ -62,6 +64,49 @@ static struct {
     voice_ui_cb_t ui;           /* 注入的 UI 回调（状态点/字幕） */
     bool busy;                  /* 一轮管线进行中（防重入） */
 } s_vp;
+
+/* ---- 网关流式 ASR（步骤 2）：音频边录边上送，松手只等识别收尾 ---- */
+static volatile bool s_use_gw_asr;      /* 本轮是否走网关 ASR（录音开始时按连接状态决定） */
+static char *s_gw_asr_text = NULL;      /* 网关识别文本（WS 任务写入，管线任务取走并释放） */
+
+/** 网关文本消息处理器（WS 客户端任务上下文）：asr_result → 置事件位 */
+static void gw_msg_handler(const char *type, const char *data)
+{
+    if (strcmp(type, "asr_result") == 0) {              /* 识别结果到达 */
+        free(s_gw_asr_text);                            /* 丢弃上一轮残留 */
+        s_gw_asr_text = (data && data[0]) ? strdup(data) : NULL;        /* 拷贝（空结果=NULL） */
+        xEventGroupSetBits(s_vp.evt, EVT_ASR_RESULT);   /* 唤醒等待方 */
+    }
+}
+
+/** 录音块上行回调（voice_rec 块粒度 100ms/3200B → WS 二进制帧） */
+static void gw_chunk_uplink(const int16_t *mono, size_t samples)
+{
+    gw_client_send_binary(mono, samples * sizeof(int16_t));     /* 块即帧，直接发 */
+}
+
+/** 网关 ASR 收尾：发 asr_stop 并等结果（最多 5s）；成功返回识别文本（调用方 free） */
+static esp_err_t gw_asr_collect(char **text_out)
+{
+    *text_out = NULL;
+    xEventGroupClearBits(s_vp.evt, EVT_ASR_RESULT);     /* 清残留位 */
+    gw_client_send_text("{\"type\":\"asr_stop\"}");     /* 通知网关：录音结束 */
+    EventBits_t bits = xEventGroupWaitBits(s_vp.evt, EVT_ASR_RESULT,
+                                           pdTRUE, pdFALSE,
+                                           pdMS_TO_TICKS(5000));        /* 收尾+最后帧合成 */
+    if ((bits & EVT_ASR_RESULT) && s_gw_asr_text) {     /* 拿到非空识别 */
+        *text_out = s_gw_asr_text;                      /* 所有权转移 */
+        s_gw_asr_text = NULL;
+        return ESP_OK;
+    }
+    free(s_gw_asr_text);                                /* 清理 */
+    s_gw_asr_text = NULL;
+    if (bits & EVT_ASR_RESULT) {
+        return ESP_ERR_NOT_FOUND;                       /* 网关明确给出空结果（静音）——
+                                                           不必再回退本地 HTTP 白等一轮 */
+    }
+    return ESP_ERR_TIMEOUT;                             /* 真超时：允许回退本地识别 */
+}
 
 /* ---- 按句 TTS 预取流水线的常量与数据结构 ---- */
 #define TTS_SENTENCE_MAX  512   /* 单句文本上限（bytes，UTF-8） */
@@ -373,6 +418,14 @@ static void rec_until_stop_or(uint32_t max_ms)
      * 刚 begin 就"秒松手"，只录到 100ms 静音（M5 用户实测 bug） */
     xEventGroupClearBits(s_vp.evt, EVT_HOLD_STOP);
     voice_rec_begin();                                  /* 录音器复位并开始 */
+    /* 步骤 2：网关在线则走流式 ASR——块回调即 WS 上行，识别与录音并行 */
+    s_use_gw_asr = gw_client_is_connected();
+    if (s_use_gw_asr) {
+        xEventGroupClearBits(s_vp.evt, EVT_ASR_RESULT); /* 清上轮结果位 */
+        gw_client_send_text("{\"type\":\"asr_start\",\"fmt\":\"pcm16k\"}");
+        voice_rec_set_chunk_cb(gw_chunk_uplink);        /* 挂块上行回调 */
+        ESP_LOGI(TAG, "本轮 ASR 走网关流式");
+    }
     ui_state(DIALOG_STATE_LISTENING);                   /* 蓝点亮起（听） */
     ui_text("在听呢……（说完松手）");                     /* 字幕提示用户 */
     uint32_t start = (uint32_t)(esp_timer_get_time() / 1000);   /* 记录开始时刻（ms） */
@@ -384,6 +437,10 @@ static void rec_until_stop_or(uint32_t max_ms)
         if (bits & EVT_HOLD_STOP) {                     /* 用户松手了 */
             break;                                      /* 结束录音循环 */
         }
+    }
+    if (s_use_gw_asr) {                                 /* 录音结束：撤回调 + 通知网关 */
+        voice_rec_set_chunk_cb(NULL);
+        gw_client_send_text("{\"type\":\"asr_stop\"}");
     }
 }
 
@@ -398,7 +455,27 @@ static void process_wav(char *wav, size_t wav_len)
     s_t_first_sentence = 0;                             /* 首句时刻复位 */
 
     char *text = NULL;                                  /* ASR 识别文本 */
-    esp_err_t err = asr_recognize(wav, wav_len, &text); /* 识别（讯飞/MiMo 自动选择） */
+    esp_err_t err;
+    if (s_use_gw_asr) {                                 /* 网关流式 ASR（步骤 2）：音频已边录边传 */
+        esp_err_t gerr = gw_asr_collect(&text);
+        if (gerr == ESP_OK && text && text[0]) {
+            err = ESP_OK;                               /* 网关识别成功 */
+        } else if (gerr == ESP_ERR_NOT_FOUND) {         /* 网关明确空结果（静音）——直接判没听清 */
+            free(text);
+            free(wav);                                  /* WAV 用完释放 */
+            ui_text("……好像没听到我说话？再说一遍？");   /* 字幕提示重试 */
+            ui_state(DIALOG_STATE_IDLE);                /* 状态点熄灭 */
+            ESP_LOGW(TAG, "网关 ASR 空结果（静音），跳过本地回退");
+            return;                                     /* 结束本轮（不白等本地识别 6s） */
+        } else {                                        /* 真超时/故障：回退本地 HTTP 识别 */
+            free(text);
+            text = NULL;
+            ESP_LOGW(TAG, "网关 ASR 超时，回退本地 HTTP 识别");
+            err = asr_recognize(wav, wav_len, &text);
+        }
+    } else {                                            /* 网关不在线：原有整段 HTTP 识别 */
+        err = asr_recognize(wav, wav_len, &text);
+    }
     free(wav);                                          /* WAV 数据用完释放 */
     if (err != ESP_OK || text == NULL) {                /* 识别失败或空结果 */
         ui_text("……没听清呢，再说一遍？");               /* 字幕提示重试 */
@@ -744,6 +821,7 @@ esp_err_t voice_pipeline_init(void)
     ESP_RETURN_ON_FALSE(s_speak_lock, ESP_ERR_NO_MEM, TAG, "speaker lock alloc failed");    /* 失败报错 */
     s_tts_request_lock = xSemaphoreCreateMutex();   /* 创建 TTS 请求互斥锁 */
     ESP_RETURN_ON_FALSE(s_tts_request_lock, ESP_ERR_NO_MEM, TAG, "tts request lock alloc failed");  /* 失败报错 */
+    gw_client_set_msg_handler(gw_msg_handler);      /* 步骤 2：注册网关消息处理器（ASR 结果） */
     s_vp.inited = true;                             /* 置就绪标志 */
     if (xTaskCreate(pipeline_task, "voice_pipe", 8 * 1024, NULL, 4, NULL) != pdPASS) {      /* 管线任务 */
         ESP_LOGE(TAG, "创建管线任务失败");           /* 创建失败 */
@@ -798,15 +876,10 @@ esp_err_t voice_pipeline_record_ms(uint32_t ms)
         return ESP_ERR_INVALID_STATE;               /* 无网无法识别 */
     }
     s_vp.busy = true;                               /* 置忙标志 */
-    /* 同步版：录 ms 毫秒（100ms 块）后直接走管线 */
-    voice_rec_begin();                              /* 开始录音 */
-    ui_state(DIALOG_STATE_LISTENING);               /* 蓝点亮起 */
-    ui_text("在听呢……");                             /* 字幕提示说话 */
-    uint32_t start = (uint32_t)(esp_timer_get_time() / 1000);       /* 记录开始时刻 */
-    while ((uint32_t)(esp_timer_get_time() / 1000) - start < ms) {  /* 未到指定时长 */
-        voice_rec_chunk();                          /* 采集 100ms 块 */
-        vTaskDelay(pdMS_TO_TICKS(1));   /* record 本身阻塞 100ms，无需长延时 */
-    }
+    /* 同步版：录 ms 毫秒后走管线。直接复用 rec_until_stop_or——
+     * 网关流式 ASR 的启停/上行都在那里（2026-09-12：record_ms 自带
+     * 循环曾绕过网关分支，导致串口 rec 命令不走网关 ASR） */
+    rec_until_stop_or(ms);
     char *wav = NULL;                               /* WAV 输出 */
     size_t len = 0;                                 /* WAV 长度 */
     esp_err_t err = voice_rec_end_and_get(&wav, &len);      /* 结束录音取 WAV */

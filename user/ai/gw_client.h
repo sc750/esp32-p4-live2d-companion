@@ -37,6 +37,15 @@ bool gw_client_is_connected(void);
  */
 esp_err_t gw_client_send_text(const char *json_text);
 
+/** 发送二进制帧（音频上行用；须已连接） */
+esp_err_t gw_client_send_binary(const void *data, size_t len);
+
+/**
+ * @brief 注册网关文本消息处理器（在 WS 客户端任务上下文执行，勿阻塞）
+ * @param cb ("type","data")；NULL 注销。type/data 指针仅当次调用有效
+ */
+void gw_client_set_msg_handler(void (*cb)(const char *type, const char *data));
+
 #ifdef __cplusplus
 }
 #endif

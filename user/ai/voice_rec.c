@@ -39,6 +39,7 @@ static struct {
     char *buf;                  /* PSRAM 常驻缓冲：[0,44)=WAV头占位，[44,…)=PCM */
     size_t pcm_len;             /* 已录单声道 PCM 字节数 */
     bool recording;             /* 是否正在录音 */
+    void (*chunk_cb)(const int16_t *mono, size_t samples);      /* 块回调（网关上行用，可空） */
     int32_t peak;               /* 本段最大采样幅值（AGC 依据） */
     uint64_t energy;            /* 样本平方和（算 RMS 用） */
     size_t sample_count;        /* 样本总数（算 RMS 用） */
@@ -110,6 +111,14 @@ void voice_rec_chunk(void)
     }
     s_rec.sample_count += mono_samples;                 /* 样本计数累加 */
     s_rec.pcm_len += MONO_CHUNK_BYTES;                  /* PCM 游标前进 3200B */
+    if (s_rec.chunk_cb) {                               /* 块回调（网关 WS 上行） */
+        s_rec.chunk_cb(dst, mono_samples);
+    }
+}
+
+void voice_rec_set_chunk_cb(void (*cb)(const int16_t *mono, size_t samples))
+{
+    s_rec.chunk_cb = cb;                                /* 注册/注销块回调 */
 }
 
 /** 小工具：往缓冲写一个 32 位小端值（WAV 头字段用） */

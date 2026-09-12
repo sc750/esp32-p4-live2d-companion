@@ -41,6 +41,15 @@ void voice_rec_abort(void);
 /** 当前已录时长 ms */
 uint32_t voice_rec_elapsed_ms(void);
 
+/**
+ * @brief 注册"每 100ms 块"回调（语音网关上行用；NULL 注销）
+ *
+ * 回调在录音任务上下文执行，pointer 指向内部暂存的单声道 PCM
+ * （16k/16bit/mono，3200B/块），仅当次调用有效——消费方须同步处理
+ * （如立即 WS 发送），不得长期持有指针。
+ */
+void voice_rec_set_chunk_cb(void (*cb)(const int16_t *mono, size_t samples));
+
 #ifdef __cplusplus
 }
 #endif

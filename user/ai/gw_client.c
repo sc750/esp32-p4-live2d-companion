@@ -28,6 +28,7 @@
 /* 4. 平台/厂商头 */
 #include "esp_log.h"
 #include "esp_check.h"        /* ESP_RETURN_ON_* */
+#include "cJSON.h"            /* 网关消息解析 */
 #include "esp_websocket_client.h"
 
 #define TAG "gw"
@@ -40,6 +41,7 @@ static struct {
     bool inited;                                /* 幂等闸门 */
     esp_websocket_client_handle_t client;       /* WS 客户端句柄 */
     volatile bool connected;                    /* 当前连接状态 */
+    void (*msg_cb)(const char *type, const char *data);         /* 文本消息处理器 */
 } s_gw;
 
 /** WS 事件回调：连接/断开/收数据 */
@@ -72,7 +74,23 @@ static void gw_event_handler(void *arg, esp_event_base_t base,
         char buf[513];                          /* 栈上够 */
         memcpy(buf, ev->data_ptr, len);
         buf[len] = '\0';
-        ESP_LOGI(TAG, "网关→: %s", buf);        /* 步骤 1：仅日志（流水线后续接入） */
+        /* 步骤 2 起：解析 {"type","data"} 分发给注册方（ASR 结果等） */
+        if (s_gw.msg_cb) {
+            char *type = NULL, *data = NULL;
+            cJSON *root = cJSON_Parse(buf);
+            if (root) {
+                cJSON *jt = cJSON_GetObjectItem(root, "type");
+                cJSON *jd = cJSON_GetObjectItem(root, "data");
+                if (jt && cJSON_IsString(jt)) type = jt->valuestring;
+                if (jd && cJSON_IsString(jd)) data = jd->valuestring;
+                s_gw.msg_cb(type ? type : "", data ? data : "");
+            } else {
+                ESP_LOGI(TAG, "网关→: %s", buf);        /* 非 JSON 行仅日志 */
+            }
+            cJSON_Delete(root);
+        } else {
+            ESP_LOGI(TAG, "网关→: %s", buf);            /* 未注册处理器：仅日志 */
+        }
         break;
     }
     case WEBSOCKET_EVENT_ERROR:
@@ -120,4 +138,19 @@ esp_err_t gw_client_send_text(const char *json_text)
     int sent = esp_websocket_client_send_text(
         s_gw.client, json_text, strlen(json_text), portMAX_DELAY);
     return (sent >= 0) ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t gw_client_send_binary(const void *data, size_t len)
+{
+    if (!s_gw.connected) {                              /* 未连接 */
+        return ESP_ERR_INVALID_STATE;
+    }
+    int sent = esp_websocket_client_send_bin(
+        s_gw.client, data, len, portMAX_DELAY);
+    return (sent >= 0) ? ESP_OK : ESP_FAIL;
+}
+
+void gw_client_set_msg_handler(void (*cb)(const char *type, const char *data))
+{
+    s_gw.msg_cb = cb;                                   /* 注册/注销消息处理器 */
 }

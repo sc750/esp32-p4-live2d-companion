@@ -9,6 +9,20 @@
 | user/main_app.c | 4e. gw_client_init() | 启动即连 | ✅ | 待提交 |
 | user/ai/chat_console.c | gw / gw send 命令 | 回环测试通过 | ✅ | 待提交 |
 
+## 步骤 2 编辑清单（2026-09-12）
+
+| 文件 | 改动 | 结果 |
+|---|---|---|
+| tools/gateway/gateway.py | 重写为会话类：AsrSession（讯飞 IAT v2/iat wss 流式，HMAC 签名，1280B 重切）+ DeviceSession 编排（asr_start/二进制帧/asr_stop→asr_result） | ✅ |
+| user/ai/voice_rec.c/.h | 录音器加 100ms 块回调 tap（voice_rec_set_chunk_cb） | ✅ |
+| user/ai/gw_client.c/.h | 加 send_binary + set_msg_handler（type/data 分发） | ✅ |
+| user/ai/voice_pipeline.c | rec_until_stop_or 挂网关分支（asr_start/上行/asr_stop）；gw_asr_collect 等结果（5s 超时，空结果=NOT_FOUND 不回退）；process_wav 网关优先；record_ms 统一走 rec_until_stop_or（修绕过 bug） | ✅ |
+
+### 实测证据
+- 环境语音识别成功：识别「我把他被暴打了，好绝望。」ASR 全程 **1302ms**（旧整段 HTTP 路径 31017ms，24 倍）
+- 静音场景：网关明确空结果 → 直接「没听清」（跳过本地回退，省 6s）
+- 网关断开自动回退本地 HTTP 识别（降级链验证通过）
+
 ## 构建证据（2026-09-12）
 - 端到端：板上 gw send → 网关「设备文本: hello-gateway-step1」→ 网关 echo →
   板上「网关→: {"type":"echo",...}」；断线（1006）后 3s 自动重连握手
