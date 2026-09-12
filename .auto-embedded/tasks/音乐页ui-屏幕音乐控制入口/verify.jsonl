@@ -2,3 +2,4 @@
 {"item": "烧录+启动", "evidence": "COM41 烧录成功；启动日志：scr_music: 音乐页创建完成 → 列表已建 3 项 → main: 音乐页播放列表: 3 项（SD 未插自动降级网络电台，符合 Phase4 设计）", "result": "pass"}
 {"item": "串口播控命令链", "evidence": "music play 0 → 音源打开失败（Wi-Fi 未连，环境因素）后状态一致回已停止；music pause → 没在播放；music stop → 已停止。无崩溃，渲染 FPS 24", "result": "pass"}
 {"item": "电台实播+屏幕触摸验证", "evidence": "待人工：Wi-Fi AP 'sc' 未找到（reason=201），需先连网；音乐页触摸交互（主页按钮进入/返回/列表点选）需屏上实测", "result": "pending"}
+{"item": "UI 布局模拟器核对（lvgl-mcp）", "evidence": "1024×600 渲染音乐页与主页：音乐页三段式（顶栏 Back/♪Music/Playing 绿 + 曲名主题色/时长/三圆钮/音量滑块 30 + 3 项列表第 1 项主题色高亮）；主页状态栏右组 [♪深灰入口钮 56×36 #2C3E50] + 时间，控件树 JSON 确认按钮存在且布局无重叠。文案为英文占位（模拟器无中文字体）", "result": "pass"}
