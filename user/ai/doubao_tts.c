@@ -72,6 +72,7 @@ typedef struct {
     uint8_t *mp3;                   /* mp3 累积缓冲（PSRAM，翻倍扩容） */
     size_t mp3_len;                 /* 当前 mp3 字节数 */
     size_t mp3_cap;                 /* 缓冲容量 */
+    size_t mp3_total;               /* 累计收到 mp3 字节（诊断用，消费后仍计数） */
     int16_t *out;                   /* 单次解码输出缓冲 48KB（PSRAM，会话复用） */
     bool failed;                    /* 业务/协议错误标志 */
     bool first_audio;               /* 是否已回调过首块（延迟日志用） */
@@ -100,6 +101,7 @@ static void db_append_mp3(db_stream_t *st, const uint8_t *mp3_chunk, size_t len)
     }
     memcpy(st->mp3 + st->mp3_len, mp3_chunk, len);      /* 追加本块 */
     st->mp3_len += len;
+    st->mp3_total += len;
 }
 
 /** 解码会话句柄（跨 chunk 保持；open/close 由 synthesize_stream 管理） */
@@ -187,6 +189,10 @@ static void db_line_handler(const char *line, void *arg)
     }
     cJSON *jcode = cJSON_GetObjectItem(root, "code");
     if (jcode && cJSON_IsNumber(jcode) && jcode->valueint != 0) {
+        if (jcode->valueint == 20000000) {              /* 20000000+OK=合成正常结束标记 */
+            cJSON_Delete(root);                         /* 流已收完，静默收尾 */
+            return;
+        }
         cJSON *jmsg = cJSON_GetObjectItem(root, "message");
         ESP_LOGE(TAG, "豆包错误 %d: %s", jcode->valueint,
                  jmsg && cJSON_IsString(jmsg) ? jmsg->valuestring : "?");
@@ -242,12 +248,11 @@ esp_err_t doubao_tts_synthesize_stream(const char *text,
              esc, s_db.voice);                          /* 模型/文本/音色/音频规格 */
     free(esc);
 
-    /* ---- 2. 鉴权头（X-Api-App-Id + X-Api-Access-Key + 资源 ID） ---- */
-    char h_appid[64], h_key[192], h_res[64];
-    snprintf(h_appid, sizeof(h_appid), "X-Api-App-Id: %s", s_db.appid);
-    snprintf(h_key, sizeof(h_key), "X-Api-Access-Key: %s", s_db.key);
+    /* ---- 2. 鉴权头（新版控制台 API Key：只要 X-Api-Key + 资源 ID） ---- */
+    char h_key[192], h_res[64];
+    snprintf(h_key, sizeof(h_key), "X-Api-Key: %s", s_db.key);
     snprintf(h_res, sizeof(h_res), "X-Api-Resource-Id: %s", s_db.resource);
-    const char *extra[] = { h_appid, h_key, h_res, NULL };
+    const char *extra[] = { h_key, h_res, NULL };
 
     /* ---- 3. 流式收块 + 逐块解码回调 ---- */
     db_stream_t st = {                                  /* 会话状态 */
@@ -304,7 +309,7 @@ esp_err_t doubao_tts_synthesize_stream(const char *text,
         return err;                                     /* 网络/HTTP 错误 */
     }
     ESP_LOGI(TAG, "TTS 流结束: %uB mp3 / 首块 %lldms",
-             (unsigned)st.mp3_len,
+             (unsigned)st.mp3_total,
              st.first_audio ? (esp_timer_get_time() - st.t0) / 1000 : -1);
     return st.first_audio ? ESP_OK : ESP_ERR_NOT_FOUND; /* 零音频=异常 */
 }
