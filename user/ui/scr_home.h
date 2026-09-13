@@ -112,9 +112,6 @@ void scr_home_set_wifi_toggle_cb(void (*cb)(bool turn_on, void *ctx), void *ctx)
  */
 void scr_home_set_music_entry_cb(void (*cb)(void *ctx), void *ctx);
 
-/* 临时调试（音乐入口丢失排查）：串口吐状态栏坐标，查完即删 */
-void scr_home_debug_status_bar(void);
-
 /**
  * @brief 更新底部字幕
  *

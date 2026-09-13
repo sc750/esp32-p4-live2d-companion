@@ -1,1 +1,7 @@
-{"_example": {"file": "spec/architecture/index.md", "reason": "示例：删除本行"}}
+{"item": "步骤1 WS通道", "evidence": "板上 gw send -> 网关 echo -> 板上回显；断线 3s 自动重连（55f88ea）", "result": "pass"}
+{"item": "步骤2 流式ASR", "evidence": "环境语音识别 1302ms（旧 HTTP 路径 31017ms，24 倍）；回退链验证（2141e25）", "result": "pass"}
+{"item": "步骤3 TTS下行", "evidence": "首帧 PCM 561ms，152KB/4.8s 音频 927ms 推完（864d5d4）", "result": "pass"}
+{"item": "步骤4 全流水线", "evidence": "用户实测效果非常好达到预期；ASR 1.3s + LLM/TTS 网关并行（043c4a3）", "result": "pass"}
+{"item": "字幕逐句同步+拟声过滤", "evidence": "播放消耗基准推进；单行滚动不溢出；闲聊忙静默+结束5s恢复（bc93221/dbfddf4/d71100c）", "result": "pass"}
+{"item": "步骤5 打断/VAD", "evidence": "用户实测崩溃+体感慢，整体回退 f68621a；代码留档 git 历史 255a166/da18a01", "result": "deferred"}
+{"item": "密钥出库", "evidence": "gateway_secrets.py(gitignore)+Kconfig 占位；注意 GitHub 历史已泄露旧密钥，需用户到 DeepSeek/MiMo/讯飞/MiniMax 轮换", "result": "done"}

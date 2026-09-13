@@ -101,3 +101,8 @@ build_*/
 /ws_pc_test.txt
 /bridge_result.txt
 /diag_result.txt
+
+# 网关密钥（不入库）
+tools/gateway/gateway_secrets.py
+# 第三方引擎整仓（58MB，构建不直接引用）
+PainterEngine-master/

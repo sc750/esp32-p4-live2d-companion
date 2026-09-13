@@ -6,7 +6,7 @@ menu "AI 对话服务配置（phase3）"
 
     config AI_LLM_KEY
         string "LLM API Key"
-        default "REDACTED_DEEPSEEK_KEY"
+        default ""   # 密钥不 defect 入库：填在 sdkconfig（已 gitignore）
 
     config AI_LLM_MODEL
         string "LLM 模型名"
@@ -18,7 +18,7 @@ menu "AI 对话服务配置（phase3）"
 
     config AI_TTS_DOUBAO_APPID
         string "豆包 TTS App ID（空则不启用豆包后端）"
-        default "8536551771"
+        default ""   # App ID 非密钥，但一并占位
 
     config AI_TTS_DOUBAO_KEY
         string "豆包 TTS Access Token（旧版控制台）或 API Key（新版）"
@@ -47,11 +47,11 @@ menu "AI 对话服务配置（phase3）"
 
     config AI_MIMO_KEY
         string "小米 MiMo API Key"
-        default "REDACTED_MIMO_KEY"
+        default ""
 
     config AI_TTS_MINIMAX_KEY
         string "MiniMax TTS API Key（非空则 TTS 走 MiniMax，否则用 MiMo）"
-        default "REDACTED_MINIMAX_KEY"
+        default ""
 
     config AI_TTS_MINIMAX_URL
         string "MiniMax T2A v2 端点"
@@ -67,15 +67,15 @@ menu "AI 对话服务配置（phase3）"
 
     config ASR_XFYUN_APPID
         string "讯飞 APPID（非空则 ASR 走讯飞流式听写，否则用 MiMo）"
-        default "REDACTED_XFYUN_APPID"
+        default ""
 
     config ASR_XFYUN_APIKEY
         string "讯飞 APIKey（32 位）"
-        default "REDACTED_XFYUN_KEY"
+        default ""
 
     config ASR_XFYUN_APISECRET
         string "讯飞 APISecret（32 位）"
-        default "REDACTED_XFYUN_SECRET"
+        default ""
 
     config AI_DIALOG_HISTORY_ROUNDS
         int "对话历史保留轮数（1 轮 = 一问一答）"

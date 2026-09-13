@@ -42,24 +42,13 @@ HOST = "0.0.0.0"
 PORT = 8765
 
 # 讯飞流式听写凭据（与设备端 sdkconfig 同一套账号）
-XFYUN_APP_ID = "REDACTED_XFYUN_APPID"
-XFYUN_API_KEY = "REDACTED_XFYUN_KEY"
-XFYUN_API_SECRET = "REDACTED_XFYUN_SECRET"
-XFYUN_URL = "wss://iat-api.xfyun.cn/v2/iat"
+# 密钥从 gateway_secrets.py 载入（不入库；模板见 gateway_secrets.example.py）
+from gateway_secrets import (XFYUN_APP_ID, XFYUN_API_KEY, XFYUN_API_SECRET,
+                            DOUBAO_API_KEY, DEEPSEEK_KEY)
 
-# 讯飞帧规格：推荐 1280B/帧（40ms），设备 3200B/帧需重切
-XFYUN_FRAME_BYTES = 1280
-
-# 豆包 TTS（V3 HTTP chunked 单向流式，与设备端 doubao_tts 同一接口；
-# 网关请求 pcm 裸流——局域网带宽充裕，设备端免解码直接喂播放器）
-DOUBAO_TTS_URL = "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
-DOUBAO_API_KEY = "REDACTED_DOUBAO_KEY"
-DOUBAO_RESOURCE = "seed-tts-2.0"
-DOUBAO_VOICE = "zh_female_vv_uranus_bigtts"
 
 # DeepSeek LLM（步骤 4：流式生成 + 断句 + 逐句 TTS 编排）
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
-DEEPSEEK_KEY = "REDACTED_DEEPSEEK_KEY"
 DEEPSEEK_MODEL = "deepseek-flash"
 TERMINAL_PUNCT = "。！？!?；;\n"          # 断句终止符（软断句交给标点密度，这里求稳）
 

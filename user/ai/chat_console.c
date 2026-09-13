@@ -29,11 +29,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "scr_home.h"       /* 临时调试：uix 命令吐状态栏坐标 */
 #include "persona.h"        /* persona reset 命令（人设限长规则上板用） */
 #include "gw_client.h"        /* gw 命令（网关通道测试） */
-#include "lwip/netdb.h"     /* 临时调试：dns 命令 getaddrinfo */
-#include "lwip/inet.h"      /* 临时调试：dns 命令 inet_ntoa_r */
 #include "memory_store.h"
 #include "diary_service.h"
 #include "music_service.h"
@@ -303,11 +300,6 @@ static void dispatch_line(char *line, size_t len)
         exec_diary_cmd("");                             /* 空参数触发用法 */
         return;                                         /* 结束 */
     }
-    /* 临时调试：uix 吐状态栏坐标（音乐入口丢失排查，查完即删） */
-    if (len == 3 && strncmp(line, "uix", 3) == 0) {
-        scr_home_debug_status_bar();
-        return;
-    }
     /* 命令路由："gw" 网关状态；"gw send <json>" 发文本（步骤 1 通道测试） */
     if (len == 2 && strncmp(line, "gw", 2) == 0) {
         say(gw_client_is_connected() ? "网关: 已连接\r\n" : "网关: 未连接\r\n");
@@ -323,26 +315,6 @@ static void dispatch_line(char *line, size_t len)
         esp_err_t pe = persona_reset_default();
         say(pe == ESP_OK ? "人设已恢复默认（含回复限长规则）\r\n"
                          : "人设恢复失败\r\n");
-        return;
-    }
-    /* 临时调试：dns <host> 看板上域名解析结果（TTS 连不上排查，查完即删） */
-    if (len >= 8 && strncmp(line, "dns ", 4) == 0) {
-        const struct addrinfo hints = { .ai_family = AF_INET };
-        struct addrinfo *res = NULL;
-        int rc = getaddrinfo(line + 4, NULL, &hints, &res);
-        if (rc != 0 || res == NULL) {
-            say("解析失败\r\n");                         /* 结果回显 */
-        } else {
-            for (const struct addrinfo *ai = res; ai; ai = ai->ai_next) {
-                char msg[48];                           /* 单行回显缓冲 */
-                char ip[16] = {0};                      /* 点分十进制缓冲 */
-                struct sockaddr_in *a = (struct sockaddr_in *)ai->ai_addr;
-                inet_ntoa_r(a->sin_addr, ip, sizeof(ip));       /* 转 IP 串 */
-                snprintf(msg, sizeof(msg), "-> %s\r\n", ip);    /* 组行 */
-                say(msg);                               /* 逐条回显 */
-            }
-            freeaddrinfo(res);                          /* 释放链表 */
-        }
         return;
     }
     /* 命令路由："music" 族（scan/list/play/...） */

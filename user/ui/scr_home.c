@@ -455,36 +455,6 @@ void scr_home_set_music_entry_cb(void (*cb)(void *ctx), void *ctx)
     s_music_entry_ctx = ctx;
 }
 
-/* 临时调试（音乐入口丢失排查）：吐状态栏各控件实际坐标，查完即删 */
-void scr_home_debug_status_bar(void)
-{
-    lv_obj_t *bar = s_home_ui.status_bar;
-    if (bar == NULL) {
-        ESP_LOGI(TAG, "uix: status_bar 未创建");
-        return;
-    }
-    ESP_LOGI(TAG, "uix: bar=(%d,%d %dx%d) 子数=%d",
-             lv_obj_get_x(bar), lv_obj_get_y(bar),
-             lv_obj_get_width(bar), lv_obj_get_height(bar),
-             lv_obj_get_child_count(bar));
-    for (int32_t i = 0; i < (int32_t)lv_obj_get_child_count(bar); i++) {
-        lv_obj_t *c = lv_obj_get_child(bar, i);
-        ESP_LOGI(TAG, "uix: child[%d]=(%d,%d %dx%d) hidden=%d",
-                 (int)i, lv_obj_get_x(c), lv_obj_get_y(c),
-                 lv_obj_get_width(c), lv_obj_get_height(c),
-                 lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN));
-        for (int32_t j = 0; j < (int32_t)lv_obj_get_child_count(c); j++) {
-            lv_obj_t *g = lv_obj_get_child(c, j);
-            ESP_LOGI(TAG, "uix:   g[%d]=(%d,%d %dx%d) hidden=%d",
-                     (int)j, lv_obj_get_x(g), lv_obj_get_y(g),
-                     lv_obj_get_width(g), lv_obj_get_height(g),
-                     lv_obj_has_flag(g, LV_OBJ_FLAG_HIDDEN));
-        }
-    }
-    ESP_LOGI(TAG, "uix: music_btn=%p hidden=%d",
-             s_home_ui.music_btn,
-             s_home_ui.music_btn ? lv_obj_has_flag(s_home_ui.music_btn, LV_OBJ_FLAG_HIDDEN) : -1);
-}
 
 void scr_home_set_subtitle(const char *text)
 {
