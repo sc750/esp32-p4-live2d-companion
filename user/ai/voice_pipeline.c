@@ -59,7 +59,19 @@
 
 /* 网关全流水线的回复状态（步骤 4） */
 static char *s_gw_reply = NULL;         /* 网关完整回复（WS 任务写入，管线任务取走） */
-static char s_gw_sub[2048];             /* 流式字幕累积（reply_sentence 逐句追加） */
+static char s_gw_sub[2048];             /* 完整回复累积（reply_done 定稿用） */
+
+/* 字幕逐句同步状态机（步骤 6）：语音播到哪句，字幕显示哪句 */
+#define SUB_SENT_MAX    8               /* 缓存句数（50 字限长下 3~4 句足够） */
+#define SUB_SENT_LEN    128             /* 单句缓存字节数 */
+static struct {
+    char text[SUB_SENT_MAX][SUB_SENT_LEN];      /* 各句文本 */
+    uint32_t pcm_bytes[SUB_SENT_MAX];           /* 各句累计 PCM 边界（网关随句下发） */
+    int count;                                  /* 已收句数 */
+    int shown;                                  /* 当前已显示句号（0=未显示） */
+    uint32_t fed;                               /* 已喂入 ring 的累计 PCM */
+} s_sub;
+
 static volatile bool s_gw_chat_err;     /* 网关 LLM 失败标志 */
 
 /* 串口文本播报的播放状态（ring buffer + 重采样残样 + 诊断计数）。
@@ -118,13 +130,31 @@ static void gw_msg_handler(const char *type, const char *data)
         free(s_gw_asr_text);
         s_gw_asr_text = NULL;
         xEventGroupSetBits(s_vp.evt, EVT_ASR_RESULT);
-    } else if (strcmp(type, "reply_sentence") == 0) {   /* 步骤 4：LLM 断句流式字幕 */
-        strlcat(s_gw_sub, data ? data : "", sizeof(s_gw_sub));
-        ui_text(s_gw_sub);                              /* 直接刷字幕（桥自持锁，任意任务安全） */
+    } else if (strcmp(type, "reply_sentence") == 0) {   /* 步骤 6：句子入状态机（播到再显示） */
+        /* data 格式："文本|累计pcm字节"（网关把边界拼在尾部，'|' 分隔） */
+        char sep[512];
+        strlcpy(sep, data ? data : "", sizeof(sep));
+        char *bar = strrchr(sep, '|');
+        uint32_t boundary = 0;
+        if (bar) {
+            *bar = ' ';
+            boundary = (uint32_t)strtoul(bar + 1, NULL, 10);
+        }
+        if (s_sub.count < SUB_SENT_MAX) {
+            strlcpy(s_sub.text[s_sub.count], sep, SUB_SENT_LEN);
+            s_sub.pcm_bytes[s_sub.count] = boundary;    /* 本句播完时的累计边界 */
+            s_sub.count++;
+            /* 时序补丁：网关在该句 PCM 推完后才发消息——第一句到达时播放
+             * 刚要开始，立即显示；最后一句到达后再无 PCM 帧，推进循环
+             * 永不触发，也在此补显。 */
+            if (s_sub.count == 1 || boundary <= s_gw_tts_fed) {
+                s_sub.shown = s_sub.count;
+                ui_text(s_sub.text[s_sub.shown - 1]);
+            }
+        }
     } else if (strcmp(type, "reply_done") == 0) {       /* 步骤 4：完整回复到达 */
         free(s_gw_reply);
         s_gw_reply = (data && data[0]) ? strdup(data) : NULL;
-        ui_text(s_gw_reply ? s_gw_reply : s_gw_sub);    /* 定稿字幕 */
         xEventGroupSetBits(s_vp.evt, EVT_REPLY_DONE);
     } else if (strcmp(type, "chat_error") == 0) {       /* 步骤 4：网关 LLM 失败 */
         s_gw_chat_err = true;
@@ -193,6 +223,7 @@ static bool gw_dialog_round(const char *user_text, char **reply_out)
         return false;
     }
     s_gw_sub[0] = '\0';                                 /* 字幕累积复位 */
+    memset(&s_sub, 0, sizeof(s_sub));                   /* 字幕状态机复位（每轮） */
     s_gw_chat_err = false;
     free(s_gw_reply);                                   /* 上轮残留防御 */
     s_gw_reply = NULL;
@@ -750,6 +781,14 @@ static void gw_tts_pcm_cb(const uint8_t *pcm, size_t bytes)
 {
     if (s_spk.ring != NULL && !s_spk.synth_done) {      /* 播放会话进行中才喂 */
         s_gw_tts_fed += bytes;
+        /* 字幕逐句同步（步骤 6）：喂入跨过第 shown+1 句边界 -> 显示那句。
+         * 字幕按开始喂该句切换，比声音早约半句，观感最顺。 */
+        while (s_sub.shown < s_sub.count &&
+               s_sub.pcm_bytes[s_sub.shown] > 0 &&
+               s_gw_tts_fed >= s_sub.pcm_bytes[s_sub.shown]) {
+            s_sub.shown++;
+            ui_text(s_sub.text[s_sub.shown - 1]);       /* 单句显示 */
+        }
         on_tts_audio((const int16_t *)pcm, bytes / sizeof(int16_t), NULL);
     }
 }

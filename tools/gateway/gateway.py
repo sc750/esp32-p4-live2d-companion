@@ -63,6 +63,11 @@ DEEPSEEK_KEY = "REDACTED_DEEPSEEK_KEY"
 DEEPSEEK_MODEL = "deepseek-flash"
 TERMINAL_PUNCT = "。！？!?；;\n"          # 断句终止符（软断句交给标点密度，这里求稳）
 
+# 重复拟声过滤（2026-09-12：LLM 偶发输出"咪咪咪"类哼声，字幕语音都难听）
+# 规则：同一字符连续重复 ≥3 次的片段（如"咪咪咪""哈哈哈……"保留 ≤2 连）
+import re as _re
+FILTER_FILLER_RE = _re.compile(r"([\u4e00-\u9fa5])\1{2,}")
+
 
 def xfyun_auth_url() -> str:
     """讯飞 IAT v2 鉴权 URL（HMAC-SHA256 签名，官方规则）。"""
@@ -187,12 +192,15 @@ class DeviceSession:
         self.asr: AsrSession | None = None
         self.send_lock = asyncio.Lock()  # LLM/TTS 多任务并发推送：所有发送串行化
         self.tts_cancel = False         # 设备打断：停止 TTS 推流
+        self.pcm_sent = 0               # 本会话已推给设备的 PCM 字节（句边界计量）
 
     async def send(self, obj):
         # dict → JSON；str/bytes 原样。加锁防并发 send 帧交错。
         # 设备断连时 send 会抛 ConnectionClosedError——吞掉只记日志，
         # 否则会把 run_chat/tts_worker 等会话任务整个带崩（2026-09-12 实测）。
-        data = json.dumps(obj) if isinstance(obj, (dict, list)) else obj
+        # ensure_ascii=False：中文原样传输（默认 unicode 转义膨胀 6 倍，
+        # 会撑爆设备端 512B 接收缓冲导致 JSON 截断解析失败——2026-09-12 实测）
+        data = json.dumps(obj, ensure_ascii=False) if isinstance(obj, (dict, list)) else obj
         try:
             async with self.send_lock:
                 await self.ws.send(data)
@@ -215,7 +223,7 @@ class DeviceSession:
             await self.send({"type": "pong"})
         elif mtype == "asr_start":
             if self.asr:                                # 上一轮没收尾：强制清理
-                await self._abort_asr()
+                await self.abort_asr()
             self.asr = AsrSession()
             try:
                 await self.asr.start()
@@ -293,7 +301,9 @@ class DeviceSession:
                             raise RuntimeError(f"doubao {code}")
                         data = msg.get("data")
                         if data:                            # base64 PCM 块 → 二进制推回
-                            await self.send(base64.b64decode(data))
+                            pcm = base64.b64decode(data)
+                            self.pcm_sent += len(pcm)       # 句边界计量（字幕同步用）
+                            await self.send(pcm)
 
     async def run_tts(self, text: str):
         """步骤 3 入口：整段文本流式合成，完成发 tts_end。"""
@@ -318,6 +328,7 @@ class DeviceSession:
     async def run_chat(self, msg: dict):
         """步骤 4：流式 LLM → 断句 → 逐句豆包流式（LLM 生成与 TTS 合成真并行）。"""
         self.tts_cancel = False                         # 新会话复位打断标志
+        self.pcm_sent = 0                               # 句边界计量复位
         messages = [{"role": "system", "content": msg.get("sys", "")}]
         messages += msg.get("history", [])
         messages.append({"role": "user", "content": msg.get("text", "")})
@@ -357,9 +368,8 @@ class DeviceSession:
                                 if sent is None:
                                     break
                                 buf = buf[len(sent):]
-                                await q.put(sent)
-                                await self.send({"type": "reply_sentence",
-                                                 "data": sent})     # 设备字幕流式刷新
+                                sent = FILTER_FILLER_RE.sub("", sent) or "……"     # 重复拟声过滤
+                                await q.put(sent)           # reply_sentence 改在合成后发（带 pcm_bytes，字幕逐句同步）
                     if buf:                                 # 尾句
                         await q.put(buf)
             except Exception as e:
@@ -380,12 +390,17 @@ class DeviceSession:
                 t0 = asyncio.get_event_loop().time()
                 try:
                     await self.stream_doubao(sent)
+                    # 字幕逐句同步：data = 文本 + '|' + 截至本句的累计 PCM 边界
+                    await self.send({"type": "reply_sentence",
+                                     "data": sent + "|" + str(self.pcm_sent)})
                     log.info("句 TTS 完成 (%.0f ms): %.30s",
                              (asyncio.get_event_loop().time() - t0) * 1000, sent)
                 except Exception as e:
                     if self.tts_cancel:                 # 打断引发的推流中止：不报错
                         break
                     log.error("句 TTS 失败: %r", e)      # 单句失败不拖垮整段
+                    await self.send({"type": "reply_sentence",
+                                     "data": sent + "|" + str(self.pcm_sent)})
 
         worker = asyncio.create_task(tts_worker())
         await llm_stream()                                  # LLM 完成后 reply_done 已发
@@ -408,7 +423,7 @@ async def handle_device(ws):
         log.info("设备下线: %s（code=%s）", peer, e.code)
     finally:
         if sess.asr:                                    # 连接断开时清理在途会话
-            await sess._abort_asr()
+            await sess.abort_asr()
         log.info("连接清理: %s", peer)
 
 

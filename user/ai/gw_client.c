@@ -108,10 +108,11 @@ static void gw_event_handler(void *arg, esp_event_base_t base,
             break;                                      /* 其他 opcode 忽略 */
         }
         int len = ev->data_len;
-        if (len > 512) {
-            len = 512;                          /* 步骤 1 消息都很小，截断防御 */
+        if (len > 2047) {
+            len = 2047;                         /* 长回复全文（reply_done）可达 KB 级 */
         }
-        char buf[513];                          /* 栈上够 */
+        static char rbuf[2048];                 /* static：不占 WS 任务栈（原 512B 不够） */
+        char *buf = rbuf;
         memcpy(buf, ev->data_ptr, len);
         buf[len] = '\0';
         /* 步骤 2 起：解析 {"type","data"} 分发给注册方（ASR 结果等） */

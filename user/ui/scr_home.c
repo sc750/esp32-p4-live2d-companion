@@ -282,8 +282,10 @@ static void create_subtitle_bar(lv_obj_t *parent)
                                 lv_color_hex(0xFFFFFF), 0);  /* 白色文字 */
     lv_obj_set_style_text_font(s_home_ui.subtitle_label,
                                nino_font_cjk16(), 0);
-    lv_label_set_long_mode(s_home_ui.subtitle_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(s_home_ui.subtitle_label, 700);
+    /* 步骤 6：字幕逐句同步——每次只显示一句话，单行永不溢出。
+     * 超长句循环滚动（LV_LABEL_LONG_SCROLL_CIRCULAR）；宽度吃满中间区。 */
+    lv_label_set_long_mode(s_home_ui.subtitle_label, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_set_width(s_home_ui.subtitle_label, 740);
     lv_obj_set_style_text_align(s_home_ui.subtitle_label,
                                 LV_TEXT_ALIGN_CENTER, 0);
 
