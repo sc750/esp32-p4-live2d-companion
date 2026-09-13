@@ -68,6 +68,9 @@ void rig_chatter_touch(bool on_head);
  */
 void rig_chatter_set_busy(bool busy);
 
+/** 忙结束并请求快速恢复：5 秒后投放一条语录（而非等原 3~8 分钟间隔） */
+void rig_chatter_set_busy_soon(bool busy);
+
 #ifdef __cplusplus
 }
 #endif

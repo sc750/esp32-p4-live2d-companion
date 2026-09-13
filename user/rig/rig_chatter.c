@@ -227,3 +227,12 @@ void rig_chatter_set_busy(bool busy)
 {
     s.busy = busy;                      /* 忙静默开关（计时不受影响） */
 }
+
+void rig_chatter_set_busy_soon(bool busy)
+{
+    s.busy = busy;                      /* 忙静默开关 */
+    if (!busy) {
+        /* 对话结束：5 秒内恢复闲聊（正常间隔 3~8 分钟太久了） */
+        s.next_ms = (uint32_t)(esp_timer_get_time() / 1000) + 5000;
+    }
+}

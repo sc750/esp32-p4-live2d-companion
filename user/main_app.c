@@ -115,7 +115,9 @@ static void on_voice_state(int state, void *ctx)
 {
     (void)ctx;
     ui_bridge_set_dialog_state(state);
-    rig_chatter_set_busy(state != DIALOG_STATE_IDLE);
+    /* 对话结束后 5s 恢复闲聊投喂（正常间隔 3~8 分钟）；
+     * 对话/播报期间保持忙静默（闲聊不抢字幕） */
+    rig_chatter_set_busy_soon(state == DIALOG_STATE_IDLE ? false : true);
 }
 
 static void on_voice_subtitle(const char *text, void *ctx)
