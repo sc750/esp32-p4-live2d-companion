@@ -99,6 +99,7 @@ static struct {
     rig_chatter_cb_t cb;        /* 触发回调 */
     void *ctx;
     uint32_t next_ms;           /* 下一次开腔时刻（esp_timer ms） */
+    bool busy;                  /* 对话忙静默（语音对话期间不抢字幕） */
     int last_line;              /* 上一句索引（防连播同一句） */
     int last_touch;             /* 上一句触摸语料索引（防连播） */
     uint32_t last_touch_ms;     /* 上次触摸触发时刻（冷却用，0=从未） */
@@ -164,8 +165,9 @@ void rig_chatter_touch(bool on_head)
 {
     const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
 
-    /* 冷却：连摸 2.5s 内不接新句（表情照常，只是不刷台词） */
-    if (s.cb == NULL || (s.last_touch_ms != 0 &&
+    /* 冷却：连摸 2.5s 内不接新句（表情照常，只是不刷台词）；
+     * 对话忙静默期间同样只做表情不刷台词 */
+    if (s.cb == NULL || s.busy || (s.last_touch_ms != 0 &&
                          now - s.last_touch_ms < TOUCH_COOLDOWN_MS)) {
         return;
     }
@@ -196,7 +198,7 @@ void rig_chatter_touch(bool on_head)
 void rig_chatter_tick(void)
 {
     const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
-    if (s.cb == NULL || now < s.next_ms) {
+    if (s.cb == NULL || s.busy || now < s.next_ms) {
         return;
     }
 
@@ -219,4 +221,9 @@ void rig_chatter_tick(void)
     s.next_ms = now + next_gap_ms();                    /* 先约下次，再开腔 */
     s.cb(LINES[pick].text, estimate_speak_ms(LINES[pick].text), s.ctx);
     ESP_LOGD(TAG, "chatter[%d]: %s", pick, LINES[pick].text);
+}
+
+void rig_chatter_set_busy(bool busy)
+{
+    s.busy = busy;                      /* 忙静默开关（计时不受影响） */
 }

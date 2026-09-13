@@ -60,6 +60,14 @@ void rig_chatter_tick(void);
  */
 void rig_chatter_touch(bool on_head);
 
+/**
+ * @brief 对话忙静默（步骤 6）：忙=true 期间闲聊轮播与触摸台词都不刷字幕
+ *
+ * 语音对话/播报进行中调用，防止闲聊语料覆盖对话字幕。闲聊计时照常走，
+ * 忙解除后到点自然恢复。
+ */
+void rig_chatter_set_busy(bool busy);
+
 #ifdef __cplusplus
 }
 #endif

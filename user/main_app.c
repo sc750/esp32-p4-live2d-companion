@@ -109,11 +109,13 @@ static void on_voice_hold(bool holding, void *ctx)
     }
 }
 
-/** 语音管线的 UI 反馈 → 桥接到字幕/状态点 */
+/** 语音管线的 UI 反馈 → 桥接到字幕/状态点；
+ * 对话进行中让闲聊轮播闭嘴（防随机语料覆盖对话字幕，2026-09-12 实测） */
 static void on_voice_state(int state, void *ctx)
 {
     (void)ctx;
     ui_bridge_set_dialog_state(state);
+    rig_chatter_set_busy(state != DIALOG_STATE_IDLE);
 }
 
 static void on_voice_subtitle(const char *text, void *ctx)

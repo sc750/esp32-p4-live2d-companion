@@ -83,6 +83,7 @@ static struct {
     StaticStreamBuffer_t ring_ctl;  /* 静态创建的控制块 */
     volatile bool synth_done;       /* TTS 拉流结束 */
     volatile bool player_done;      /* 播放任务排空退出 */
+    volatile uint32_t played_bytes; /* 已从 ring 消耗（真正播出的）PCM 字节 */
     volatile bool player_started;   /* 预缓冲足够后才启动播放 */
     volatile uint32_t underflows;   /* 诊断：播放时缓冲耗尽次数 */
     volatile uint32_t send_failures;/* 诊断：SSE 塞缓冲失败次数 */
@@ -144,12 +145,12 @@ static void gw_msg_handler(const char *type, const char *data)
             strlcpy(s_sub.text[s_sub.count], sep, SUB_SENT_LEN);
             s_sub.pcm_bytes[s_sub.count] = boundary;    /* 本句播完时的累计边界 */
             s_sub.count++;
-            /* 时序补丁：网关在该句 PCM 推完后才发消息——第一句到达时播放
-             * 刚要开始，立即显示；最后一句到达后再无 PCM 帧，推进循环
-             * 永不触发，也在此补显。 */
-            if (s_sub.count == 1 || boundary <= s_gw_tts_fed) {
-                s_sub.shown = s_sub.count;
-                ui_text(s_sub.text[s_sub.shown - 1]);
+            /* 时序补丁：第一句到达时播放刚要开始，立即显示（字幕不空白）。
+             * 其余句由 player_task 按播放消耗推进（推流快于播放，
+             * 收到消息即显示会导致字幕狂飙——2026-09-12 体验实测修正）。 */
+            if (s_sub.count == 1) {
+                s_sub.shown = 1;
+                ui_text(s_sub.text[0]);
             }
         }
     } else if (strcmp(type, "reply_done") == 0) {       /* 步骤 4：完整回复到达 */
@@ -780,15 +781,7 @@ static void process_wav(char *wav, size_t wav_len)
 static void gw_tts_pcm_cb(const uint8_t *pcm, size_t bytes)
 {
     if (s_spk.ring != NULL && !s_spk.synth_done) {      /* 播放会话进行中才喂 */
-        s_gw_tts_fed += bytes;
-        /* 字幕逐句同步（步骤 6）：喂入跨过第 shown+1 句边界 -> 显示那句。
-         * 字幕按开始喂该句切换，比声音早约半句，观感最顺。 */
-        while (s_sub.shown < s_sub.count &&
-               s_sub.pcm_bytes[s_sub.shown] > 0 &&
-               s_gw_tts_fed >= s_sub.pcm_bytes[s_sub.shown]) {
-            s_sub.shown++;
-            ui_text(s_sub.text[s_sub.shown - 1]);       /* 单句显示 */
-        }
+        s_gw_tts_fed += bytes;                          /* 仅诊断用（字幕推进在 player_task） */
         on_tts_audio((const int16_t *)pcm, bytes / sizeof(int16_t), NULL);
     }
 }
@@ -807,6 +800,7 @@ static esp_err_t spk_ring_begin(void)
     s_spk.player_done = false;                      /* 播放未完成 */
     s_spk.player_started = true;                    /* 播放器立即启动（帧到前欠载等待） */
     s_spk.underflows = 0;                           /* 诊断计数复位 */
+    s_spk.played_bytes = 0;                         /* 播放消耗复位（字幕同步基准） */
     s_spk.send_failures = 0;
     s_spk.max_feed_gap_ms = 0;
     s_spk.last_feed_us = 0;
@@ -831,6 +825,15 @@ static void player_task(void *arg)
         size_t got = xStreamBufferReceive(s_spk.ring, buf, sizeof(buf),     /* 从 ring 取数据 */
                                           pdMS_TO_TICKS(SPK_RECV_TIMEOUT_MS));      /* 40ms 超时 */
         if (got > 0) {                              /* 取到数据 */
+            s_spk.played_bytes += (uint32_t)got;    /* 播放消耗累计（字幕同步基准） */
+            /* 字幕逐句同步：按"真正播出"的字节推进——网关推流远快于播放，
+             * 用喂入基准会让字幕几秒内飙完（2026-09-12 体验实测修正） */
+            while (s_sub.shown < s_sub.count &&
+                   s_sub.pcm_bytes[s_sub.shown] > 0 &&
+                   s_spk.played_bytes >= s_sub.pcm_bytes[s_sub.shown]) {
+                s_sub.shown++;
+                ui_text(s_sub.text[s_sub.shown - 1]);
+            }
             esp_err_t err = bsp_audio_play(buf, got);       /* 喂给扬声器 */
             if (err != ESP_OK) {                    /* 写入失败 */
                 ESP_LOGE(TAG, "I2S playback write failed: %s", esp_err_to_name(err));       /* 打印错误 */
